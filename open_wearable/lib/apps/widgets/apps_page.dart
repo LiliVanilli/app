@@ -7,6 +7,7 @@ import 'package:open_wearable/apps/posture_tracker/model/earable_attitude_tracke
 import 'package:open_wearable/apps/posture_tracker/view/posture_tracker_view.dart';
 import 'package:open_wearable/apps/widgets/select_earable_view.dart';
 import 'package:open_wearable/apps/widgets/app_tile.dart';
+import 'package:open_wearable/apps/meditation/view/meditation_view.dart';
 
 import '../../widgets/devices/connect_devices_page.dart';
 
@@ -25,6 +26,12 @@ class AppInfo {
 }
 
 List<AppInfo> _apps = [
+  AppInfo(
+    logoPath: "lib/apps/meditation/assets/image.png",
+    title: "Meditation",
+    description: "Stress-adaptive meditation sessions",
+    widget: const MeditationView(),
+  ),
   AppInfo(
     logoPath: "lib/apps/posture_tracker/assets/logo.png",
     title: "Posture Tracker",
