@@ -76,6 +76,7 @@ class MockHrSensor {
   /// Simulate relaxation (decrease HR, increase HRV)
   void simulateRelaxation() {
     _targetHr = 70.0;
+    // Let it gradually move to target (no instant jump)
   }
   
   /// Reset to baseline

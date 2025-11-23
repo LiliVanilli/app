@@ -54,4 +54,17 @@ class StressDetector {
     
     return (hrStress + hrvStress).clamp(0.0, 100.0);
   }
+  
+  /// Get stress category as string
+  /// 
+  /// Returns: 'relaxed', 'normal', or 'stressed'
+  String getStressCategory(double hr, double hrv) {
+    if (isRelaxed(hr, hrv)) {
+      return 'relaxed';
+    } else if (isStressed(hr, hrv)) {
+      return 'stressed';
+    } else {
+      return 'normal';
+    }
+  }
 }
