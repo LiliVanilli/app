@@ -20,10 +20,10 @@ class StressDetector {
   double relaxHrvThreshold;
   
   StressDetector({
-    this.stressHrThreshold = 90.0,      // BPM
-    this.stressHrvThreshold = 20.0,     // RMSSD in ms
-    this.relaxHrThreshold = 75.0,       // BPM
-    this.relaxHrvThreshold = 35.0,      // RMSSD in ms
+    this.stressHrThreshold = 95.0,      // BPM (stressed > 95)
+    this.stressHrvThreshold = 15.0,     // RMSSD in ms (stressed < 15)
+    this.relaxHrThreshold = 75.0,       // BPM (relaxed < 75)
+    this.relaxHrvThreshold = 30.0,      // RMSSD in ms (relaxed > 30)
   });
   
   /// Check if stress is detected

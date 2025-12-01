@@ -3,39 +3,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:open_earable_flutter/open_earable_flutter.dart';
 import '../model/mock_hr_sensor.dart';
+import '../model/earable_hr_sensor.dart';
+import '../model/hr_sensor_interface.dart';
 import '../model/stress_detector.dart';
 import 'stress_prompt_dialog.dart';
 import 'snooze_dialog.dart';
 import 'success_dialog.dart';
 import '../widgets/hr_hrv_display_new.dart';
 import '../widgets/breathing_animation.dart';
+import '../widgets/hr_hrv_chart.dart';
+import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
 
-/// Main meditation view
-/// 
-/// Features:
-/// - Real-time HR/HRV display
-/// - Automatic stress detection
-/// - Meditation session management
 class MeditationView extends StatefulWidget {
-  const MeditationView({super.key});
+  final Sensor? ppgSensor;
+  final SensorConfigurationProvider? sensorConfigProvider;
+  
+  const MeditationView({
+    super.key,
+    this.ppgSensor,
+    this.sensorConfigProvider,
+  });
   
   @override
   State<MeditationView> createState() => _MeditationViewState();
 }
 
 class _MeditationViewState extends State<MeditationView> {
-  final MockHrSensor _sensor = MockHrSensor();
+  HrSensorInterface? _sensor;
+  bool _useMockSensor = true;
   final StressDetector _detector = StressDetector();
   final AudioPlayer _audioPlayer = AudioPlayer();
   
   double _currentHr = 75.0;
-  double _currentHrv = 40.0;
+  double _currentHrv = -1.0; // -1 means no data yet
+  bool _hrvIsStable = false; // Track if HRV measurements are reliable
+  int _hrvMeasurementCount = 0; // Count HRV measurements received
   double _hrBeforeMeditation = 75.0;
-  double _hrvBeforeMeditation = 40.0;
+  double _hrvBeforeMeditation = -1.0; // -1 means no data yet
   bool _isMeditating = false;
   bool _dialogShown = false;
-  bool _wasStressedBeforeMeditation = false;
   
   StreamSubscription<double>? _hrSubscription;
   StreamSubscription<Map<String, double>>? _hrvSubscription;
@@ -43,30 +51,171 @@ class _MeditationViewState extends State<MeditationView> {
   @override
   void initState() {
     super.initState();
+    _initializeSensor();
+  }
+  
+  void _initializeSensor() {
+    // Always start with mock sensor
+    // User can manually switch to earable by pressing "Use Earable" button
+    print('🎯 Starting with mock sensor');
+    _sensor = MockHrSensor();
+    _useMockSensor = true;
     _startMonitoring();
   }
   
-  void _startMonitoring() {
-    _sensor.start();
+  void _switchToEarableSensor() {
+    if (widget.ppgSensor == null) {
+      _showErrorDialog('No earable device connected. Please connect an OpenEarable device first.');
+      return;
+    }
     
-    _hrSubscription = _sensor.hrStream.listen((hr) {
+    print('Switching to earable sensor...');
+    
+    // Stop current sensor
+    _hrSubscription?.cancel();
+    _hrvSubscription?.cancel();
+    _sensor?.dispose();
+    
+    // WICHTIG: Sensor-Konfiguration setzen, wie die Heart Tracker App es macht!
+    final sensor = widget.ppgSensor!;
+    final configProvider = widget.sensorConfigProvider;
+    
+    if (configProvider != null) {
+      SensorConfiguration configuration = sensor.relatedConfigurations.first;
+
+      // Stream-Option aktivieren
+      if (configuration is ConfigurableSensorConfiguration &&
+          configuration.availableOptions.contains(StreamSensorConfigOption())) {
+        configProvider.addSensorConfigurationOption(configuration, StreamSensorConfigOption());
+        print('Added stream configuration option');
+      }
+
+      // Konfiguration setzen
+      List<SensorConfigurationValue> values = configProvider.getSensorConfigurationValues(configuration, distinct: true);
+      configProvider.addSensorConfiguration(configuration, values.first);
+      SensorConfigurationValue selectedValue = configProvider.getSelectedConfigurationValue(configuration)!;
+      
+      // KRITISCH: Sensor konfigurieren!
+      configuration.setConfiguration(selectedValue);
+      print('Set sensor configuration: $selectedValue');
+    }
+    
+    // Get sample frequency from sensor configuration
+    double sampleFreq = 84.0; // Default to 84 Hz for PPG
+    if (widget.sensorConfigProvider != null) {
+      for (final config in widget.ppgSensor!.relatedConfigurations) {
+        final value = widget.sensorConfigProvider!.getSelectedConfigurationValue(config);
+        if (value is SensorFrequencyConfigurationValue) {
+          sampleFreq = value.frequencyHz;
+          print('Using sample frequency: $sampleFreq Hz');
+          break;
+        }
+      }
+    }
+    
+    // Create real sensor
+    _sensor = EarableHrSensor(
+      ppgSensor: widget.ppgSensor!,
+      sampleFreq: sampleFreq,
+    );
+    
+    setState(() {
+      _useMockSensor = false;
+    });
+    
+    // Restart monitoring with real sensor
+    _startMonitoring();
+    
+    print('Switched to earable sensor! _useMockSensor = $_useMockSensor');
+    
+    // Show success message only if widget is still mounted
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showSuccessSnackbar('Now using real earable data!');
+        }
+      });
+    }
+  }
+  
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => PlatformAlertDialog(
+        title: const Text('Error'),
+        content: Text(message),
+        actions: [
+          PlatformDialogAction(
+            child: const Text('OK'),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _showSuccessSnackbar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+  
+  void _openLiveChart() {
+    if (_sensor == null) return;
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => HrHrvChart(
+          hrStream: _sensor!.hrStream,
+          hrvStream: _sensor!.hrvStream,
+        ),
+      ),
+    );
+  }
+  
+  void _startMonitoring() {
+    if (_sensor == null) return;
+    
+    _sensor!.start();
+    
+    // Reset stability tracking when starting new sensor
+    setState(() {
+      _hrvIsStable = _useMockSensor; // Mock sensor is always stable
+      _hrvMeasurementCount = 0;
+    });
+    
+    _hrSubscription = _sensor!.hrStream.listen((hr) {
       setState(() {
         _currentHr = hr;
       });
-      _checkStress();
-      _checkRelaxationDuringMeditation();
+      if (_hrvIsStable) {
+        _checkStress();
+        _checkRelaxationDuringMeditation();
+      }
     });
     
-    _hrvSubscription = _sensor.hrvStream.listen((hrv) {
+    _hrvSubscription = _sensor!.hrvStream.listen((hrv) {
       setState(() {
         _currentHrv = hrv['HRV_RMSSD'] ?? 40.0;
+        _hrvMeasurementCount++;
+        
+        // HRV becomes stable after receiving 3 measurements
+        // (which means ~30+ RR intervals collected)
+        if (!_hrvIsStable && _hrvMeasurementCount >= 3 && !_useMockSensor) {
+          _hrvIsStable = true;
+          print('HRV measurements now stable ($_hrvMeasurementCount measurements)');
+        }
       });
     });
   }
   
   void _checkStress() {
     if (_isMeditating || _dialogShown) return;
-    
     if (_detector.isStressed(_currentHr, _currentHrv)) {
       _checkSnoozeAndShowDialog();
     }
@@ -74,27 +223,10 @@ class _MeditationViewState extends State<MeditationView> {
   
   void _checkRelaxationDuringMeditation() {
     if (!_isMeditating) return;
-    
     final isRelaxed = _detector.isRelaxed(_currentHr, _currentHrv);
     
-    // Debug output
+    // Stop meditation if relaxed - regardless if was stressed before or just testing
     if (isRelaxed) {
-      print('✅ Relaxed detected: HR=$_currentHr, HRV=$_currentHrv');
-      print('   Was stressed before: $_wasStressedBeforeMeditation');
-    }
-    
-    // Only auto-stop if person was stressed before meditation
-    // This prevents auto-stopping when testing or when already relaxed
-    if (!_wasStressedBeforeMeditation) {
-      if (isRelaxed) {
-        print('   ❌ Not auto-stopping (was not stressed before)');
-      }
-      return;
-    }
-    
-    // Check if person has become relaxed during meditation
-    if (isRelaxed) {
-      print('   🎉 Auto-stopping meditation!');
       _stopMeditation();
     }
   }
@@ -103,7 +235,6 @@ class _MeditationViewState extends State<MeditationView> {
     final prefs = await SharedPreferences.getInstance();
     final snoozeUntil = prefs.getInt('meditation_snooze_until') ?? 0;
     final now = DateTime.now().millisecondsSinceEpoch;
-    
     if (now >= snoozeUntil) {
       _dialogShown = true;
       _showStressDialog();
@@ -136,7 +267,7 @@ class _MeditationViewState extends State<MeditationView> {
         onSnooze10Min: () => _setSnooze(10),
         onSnooze30Min: () => _setSnooze(30),
         onSnooze1Hour: () => _setSnooze(60),
-        onSnoozeToday: () => _snoozeUntilEndOfDay(),
+        onSnoozeToday: _snoozeUntilEndOfDay,
       ),
     );
   }
@@ -157,62 +288,58 @@ class _MeditationViewState extends State<MeditationView> {
   }
   
   Future<void> _resetToBaseline() async {
-    // Reset sensor to baseline values
-    _sensor.reset();
+    print('Resetting to baseline...');
     
-    // Clear snooze timer so dialog can appear again
+    // Stop current sensor
+    _hrSubscription?.cancel();
+    _hrvSubscription?.cancel();
+    _sensor?.dispose();
+    
+    // Reset to mock sensor
+    _sensor = MockHrSensor();
+    
+    setState(() {
+      _useMockSensor = true;
+      _dialogShown = false;
+    });
+    
+    // Restart monitoring with mock sensor
+    _startMonitoring();
+    
+    // Clear snooze
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('meditation_snooze_until');
-    _dialogShown = false;
+    
+    print('Reset complete! Back to mock sensor. _useMockSensor = $_useMockSensor');
+    _showSuccessSnackbar('Reset to simulated data');
   }
   
   void _startMeditation() async {
-    final wasStressed = _detector.isStressed(_currentHr, _currentHrv);
-    
     setState(() {
       _hrBeforeMeditation = _currentHr;
       _hrvBeforeMeditation = _currentHrv;
       _isMeditating = true;
-      // Remember if person was stressed when starting meditation
-      _wasStressedBeforeMeditation = wasStressed;
     });
-    
-    print('🧘 Meditation started:');
-    print('  HR: $_currentHr, HRV: $_currentHrv');
-    print('  Was stressed: $wasStressed');
-    
-    // Start audio playback
     try {
       await _audioPlayer.setSource(AssetSource('meditation_sound.mp3'));
       await _audioPlayer.setReleaseMode(ReleaseMode.loop);
       await _audioPlayer.resume();
-      print('Audio started successfully');
     } catch (e) {
-      print('Audio playback error: $e');
+      print('Audio error: \$e');
     }
   }
   
   void _stopMeditation() {
     if (!_isMeditating) return;
-    
     final bool isRelaxed = _detector.isRelaxed(_currentHr, _currentHrv);
-    
     setState(() {
       _isMeditating = false;
       _dialogShown = false;
-      _wasStressedBeforeMeditation = false; // Reset for next meditation
     });
-    
-    // Stop audio playback
     _audioPlayer.stop();
-    
-    // Show success dialog if actually relaxed
     if (isRelaxed) {
-      // Wait for UI to update before showing dialog
       Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          _showSuccessMessage();
-        }
+        if (mounted) _showSuccessMessage();
       });
     }
   }
@@ -245,164 +372,179 @@ class _MeditationViewState extends State<MeditationView> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              Color(0xFFF5F3FF),
-              Color(0xFFEDE9FE),
-              Color(0xFFDDD6FE),
-            ],
+            colors: [Color(0xFFF5F3FF), Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
           ),
         ),
         child: SafeArea(
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    HrHrvDisplayNew(
-                      hr: _currentHr,
-                      hrv: _currentHrv,
-                      stressLevel: _detector.getStressCategory(_currentHr, _currentHrv),
-                    ),
-                  const SizedBox(height: 24),
-                  
-                  if (_isMeditating) ...[
-                    const SizedBox(height: 8),
-                    Center(
-                      child: BreathingAnimation(isActive: _isMeditating),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _stopMeditation,
-                        icon: const Icon(Icons.stop_circle_outlined, size: 20),
-                        label: const Text('Stop Meditation'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF6366F1),
-                          side: const BorderSide(color: Color(0xFF6366F1), width: 2),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 48), // Space for collapsed dev controls
-                  ] else ...[
-                    const Spacer(),
-                  ],
-                  
-                  if (!_isMeditating) const Spacer(),
-                  
-                  // Development Controls (only show when NOT meditating)
-                  if (!_isMeditating) ...[
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () => _sensor.simulateStress(),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.orange[100],
-                              foregroundColor: Colors.orange[900],
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text('Simulate Stress'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: _resetToBaseline,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.grey[200],
-                              foregroundColor: Colors.grey[800],
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text('Reset'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                ],
-              ),
-            ),
-            // Overlay Dev Controls for meditation mode
-            if (_isMeditating)
-              Positioned(
-                left: 16,
-                right: 16,
-                bottom: 16,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 8,
-                        offset: const Offset(0, -2),
-                      ),
-                    ],
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: constraints.maxHeight,
                   ),
-                  child: Theme(
-                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                    child: ExpansionTile(
-                      title: Text(
-                        'Dev Controls',
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      initiallyExpanded: false,
-                      children: [
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: () {
-                              // Just simulate relaxation, let the user see the values go down
-                              _sensor.simulateRelaxation();
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green[100],
-                              foregroundColor: Colors.green[900],
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                  child: IntrinsicHeight(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          HrHrvDisplayNew(
+                            hr: _currentHr,
+                            hrv: _currentHrv,
+                            stressLevel: _detector.getStressCategory(_currentHr, _currentHrv),
+                            isHrvStable: _hrvIsStable,
+                          ),
+                          const SizedBox(height: 16),
+                          // Show Chart Button when using real earable data
+                          if (!_useMockSensor && !_isMeditating) ...[
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: _openLiveChart,
+                                icon: const Icon(Icons.show_chart, size: 20),
+                                label: const Text('View Live Chart'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF6366F1),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  elevation: 3,
+                                ),
                               ),
                             ),
-                            child: const Text('Simulate Relax'),
-                          ),
-                        ),
-                      ],
+                            const SizedBox(height: 8),
+                          ],
+                          if (_isMeditating) ...[
+                            const SizedBox(height: 8),
+                            Center(child: BreathingAnimation(isActive: _isMeditating)),
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: _stopMeditation,
+                                icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                                label: const Text('Stop Meditation'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: const Color(0xFF6366F1),
+                                  side: const BorderSide(color: Color(0xFF6366F1), width: 2),
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                              ),
+                            ),
+                            // Simulate Relax button during meditation (for testing)
+                            if (_useMockSensor && _sensor is MockHrSensor) ...[
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  onPressed: (_sensor as MockHrSensor).simulateRelaxation,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green[100],
+                                    foregroundColor: Colors.green[900],
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  child: const Text('Simulate Relax'),
+                                ),
+                              ),
+                            ],
+                          ],
+                          // Spacer to push buttons down
+                          if (!_isMeditating) 
+                            const Spacer(),
+                          // 4 BUTTONS IN 2x2 GRID
+                          if (!_isMeditating) ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: (widget.ppgSensor != null && _useMockSensor) 
+                                        ? _switchToEarableSensor 
+                                        : null,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: _useMockSensor ? Colors.blue[100] : Colors.green[100],
+                                      foregroundColor: _useMockSensor ? Colors.blue[900] : Colors.green[900],
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                      disabledBackgroundColor: _useMockSensor ? Colors.grey[300] : Colors.green[100],
+                                      disabledForegroundColor: _useMockSensor ? Colors.grey[600] : Colors.green[900],
+                                    ),
+                                    child: Text(_useMockSensor ? 'Use Earable' : '✓ Using Earable'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: _useMockSensor && _sensor is MockHrSensor 
+                                        ? (_sensor as MockHrSensor).simulateStress 
+                                        : null,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.orange[100],
+                                      foregroundColor: Colors.orange[900],
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                      disabledBackgroundColor: Colors.grey[300],
+                                      disabledForegroundColor: Colors.grey[600],
+                                    ),
+                                    child: const Text('Simulate Stress'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: _resetToBaseline,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.grey[200],
+                                      foregroundColor: Colors.grey[800],
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    ),
+                                    child: const Text('Reset'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: _useMockSensor && _sensor is MockHrSensor 
+                                        ? (_sensor as MockHrSensor).simulateRelaxation 
+                                        : null,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green[100],
+                                      foregroundColor: Colors.green[900],
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                      disabledBackgroundColor: Colors.grey[300],
+                                      disabledForegroundColor: Colors.grey[600],
+                                    ),
+                                    child: const Text('Simulate Relax'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-          ],
+              );
+            },
+          ),
         ),
       ),
-    ),);
-  }
-  
-  @override
+    );
+  }  @override
   void dispose() {
     _hrSubscription?.cancel();
     _hrvSubscription?.cancel();
-    _sensor.dispose();
+    _sensor?.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }

@@ -104,7 +104,8 @@ class PpgFilter {
       buffer.removeWhere((event) => event.$1 < timestamp - windowDurationMs);
 
       if ((buffer.last.$1 - buffer.first.$1) < windowDurationMs / 2) {
-        _logger.d("waiting to fill buffer, time difference: ${buffer.last.$1 - buffer.first.$1}");
+        // Reduced logging - only log every 2 seconds instead of every data point
+        // _logger.d("waiting to fill buffer, time difference: ${buffer.last.$1 - buffer.first.$1}");
         continue;
       }
 
@@ -112,7 +113,7 @@ class PpgFilter {
 
       // Need at least 2 peaks to compute HR
       if (peakTimestamps.length < 2) {
-        _logger.w("not enough peaks ${peakTimestamps.length}, in buffer of size ${buffer.length}");
+        // _logger.w("not enough peaks ${peakTimestamps.length}, in buffer of size ${buffer.length}");
         continue;
       }
 

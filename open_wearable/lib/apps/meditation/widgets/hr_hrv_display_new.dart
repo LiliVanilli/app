@@ -6,12 +6,14 @@ class HrHrvDisplayNew extends StatelessWidget {
   final double hr;
   final double hrv;
   final String stressLevel;
+  final bool isHrvStable; // New: indicates if HRV measurement is reliable
   
   const HrHrvDisplayNew({
     super.key,
     required this.hr,
     required this.hrv,
     required this.stressLevel,
+    this.isHrvStable = true, // Default to true for backward compatibility
   });
   
   @override
@@ -74,8 +76,13 @@ class HrHrvDisplayNew extends StatelessWidget {
                   icon: Icons.show_chart,
                   iconColor: const Color(0xFF4ECDC4),
                   label: 'HRV (RMSSD)',
-                  value: '${hrv.toStringAsFixed(1)} ms',
+                  value: hrv < 0
+                      ? 'Loading...'
+                      : (isHrvStable 
+                          ? '${hrv.toStringAsFixed(1)} ms' 
+                          : 'Measuring...'),
                   iconBackground: const Color(0xFFE0F7F6),
+                  isLoading: hrv < 0 || !isHrvStable,
                 ),
               ),
             ],
@@ -120,6 +127,7 @@ class _MetricCard extends StatelessWidget {
   final Color iconBackground;
   final String label;
   final String value;
+  final bool isLoading; // New: shows loading indicator
   
   const _MetricCard({
     required this.icon,
@@ -127,6 +135,7 @@ class _MetricCard extends StatelessWidget {
     required this.iconBackground,
     required this.label,
     required this.value,
+    this.isLoading = false,
   });
   
   @override
@@ -159,14 +168,40 @@ class _MetricCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: -0.5,
-                ),
-              ),
+              isLoading
+                  ? SizedBox(
+                      height: 22,
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(iconColor),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            value,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.grey[600],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : Text(
+                      value,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: -0.5,
+                      ),
+                    ),
             ],
           ),
         ),

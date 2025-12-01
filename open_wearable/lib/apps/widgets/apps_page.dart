@@ -30,7 +30,24 @@ List<AppInfo> _apps = [
     logoPath: "lib/apps/meditation/assets/image.png",
     title: "Meditation",
     description: "Stress-adaptive meditation sessions",
-    widget: const MeditationView(),
+    widget: SelectEarableView(
+      startApp: (wearable, sensorConfigProvider) {
+        Sensor? ppgSensor;
+        if (wearable is SensorManager) {
+          try {
+            ppgSensor = (wearable as SensorManager).sensors.firstWhere(
+              (s) => s.sensorName.toLowerCase() == "photoplethysmography".toLowerCase(),
+            );
+          } catch (e) {
+            // No PPG sensor found, will use mock sensor
+          }
+        }
+        return MeditationView(
+          ppgSensor: ppgSensor,
+          sensorConfigProvider: sensorConfigProvider,
+        );
+      },
+    ),
   ),
   AppInfo(
     logoPath: "lib/apps/posture_tracker/assets/logo.png",
