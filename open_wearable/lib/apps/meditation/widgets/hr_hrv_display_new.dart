@@ -5,15 +5,19 @@ import 'package:flutter/material.dart';
 class HrHrvDisplayNew extends StatelessWidget {
   final double hr;
   final double hrv;
+  final double? sdnn; // Optional SDNN value (comparable to Apple Health)
   final String stressLevel;
   final bool isHrvStable; // New: indicates if HRV measurement is reliable
+  final int? measurementDurationSeconds; // Timer for metrics requiring long measurement
   
   const HrHrvDisplayNew({
     super.key,
     required this.hr,
     required this.hrv,
+    this.sdnn, // Optional: for Apple Health comparison
     required this.stressLevel,
     this.isHrvStable = true, // Default to true for backward compatibility
+    this.measurementDurationSeconds,
   });
   
   @override
@@ -75,7 +79,7 @@ class HrHrvDisplayNew extends StatelessWidget {
                 child: _MetricCard(
                   icon: Icons.show_chart,
                   iconColor: const Color(0xFF4ECDC4),
-                  label: 'HRV (RMSSD)',
+                  label: 'RMSSD',
                   value: hrv < 0
                       ? 'Loading...'
                       : (isHrvStable 
@@ -83,6 +87,21 @@ class HrHrvDisplayNew extends StatelessWidget {
                           : 'Measuring...'),
                   iconBackground: const Color(0xFFE0F7F6),
                   isLoading: hrv < 0 || !isHrvStable,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _MetricCard(
+                  icon: Icons.timeline,
+                  iconColor: const Color(0xFF9C27B0),
+                  label: 'SDNN',
+                  value: (sdnn == null || sdnn! < 0)
+                      ? '—'  // Em dash for pending
+                      : (isHrvStable 
+                          ? '${sdnn!.toStringAsFixed(1)} ms' 
+                          : 'Measuring...'),
+                  iconBackground: const Color(0xFFF3E5F5),
+                  isLoading: (sdnn == null || sdnn! < 0) || !isHrvStable,
                 ),
               ),
             ],
@@ -170,25 +189,28 @@ class _MetricCard extends StatelessWidget {
               const SizedBox(height: 4),
               isLoading
                   ? SizedBox(
-                      height: 22,
+                      height: 18,
                       child: Row(
                         children: [
                           SizedBox(
-                            width: 16,
-                            height: 16,
+                            width: 14,
+                            height: 14,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               valueColor: AlwaysStoppedAnimation<Color>(iconColor),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            value,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.grey[600],
-                              fontStyle: FontStyle.italic,
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              value,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[600],
+                                fontStyle: FontStyle.italic,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -197,10 +219,11 @@ class _MetricCard extends StatelessWidget {
                   : Text(
                       value,
                       style: const TextStyle(
-                        fontSize: 22,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        letterSpacing: -0.5,
+                        letterSpacing: -0.3,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
             ],
           ),

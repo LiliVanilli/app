@@ -37,11 +37,15 @@ class _MeditationViewState extends State<MeditationView> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   
   double _currentHr = 75.0;
-  double _currentHrv = -1.0; // -1 means no data yet
+  double _currentHrv = -1.0; // -1 means no data yet (RMSSD)
+  double _currentSdnn = -1.0; // -1 means no data yet (SDNN - comparable to Apple Health)
   bool _hrvIsStable = false; // Track if HRV measurements are reliable
   int _hrvMeasurementCount = 0; // Count HRV measurements received
+  int _measurementDurationSeconds = 0; // Track how long we've been measuring
+  Timer? _measurementTimer; // Timer to track measurement duration
   double _hrBeforeMeditation = 75.0;
-  double _hrvBeforeMeditation = -1.0; // -1 means no data yet
+  double _hrvBeforeMeditation = -1.0; // RMSSD before meditation
+  double _sdnnBeforeMeditation = -1.0; // SDNN before meditation
   bool _isMeditating = false;
   bool _dialogShown = false;
   
@@ -57,7 +61,7 @@ class _MeditationViewState extends State<MeditationView> {
   void _initializeSensor() {
     // Always start with mock sensor
     // User can manually switch to earable by pressing "Use Earable" button
-    print('🎯 Starting with mock sensor');
+    print('Starting with mock sensor');
     _sensor = MockHrSensor();
     _useMockSensor = true;
     _startMonitoring();
@@ -167,12 +171,23 @@ class _MeditationViewState extends State<MeditationView> {
   void _openLiveChart() {
     if (_sensor == null) return;
     
+    // Get history from sensor if it's an EarableHrSensor
+    List<double> hrHistory = [];
+    List<double> hrvHistory = [];
+    if (_sensor is EarableHrSensor) {
+      hrHistory = (_sensor as EarableHrSensor).hrHistory;
+      hrvHistory = (_sensor as EarableHrSensor).hrvHistory;
+    }
+    
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => HrHrvChart(
           hrStream: _sensor!.hrStream,
           hrvStream: _sensor!.hrvStream,
+          initialHrData: hrHistory,
+          initialHrvData: hrvHistory,
+          measurementDurationSeconds: _measurementDurationSeconds,
         ),
       ),
     );
@@ -187,6 +202,15 @@ class _MeditationViewState extends State<MeditationView> {
     setState(() {
       _hrvIsStable = _useMockSensor; // Mock sensor is always stable
       _hrvMeasurementCount = 0;
+      _measurementDurationSeconds = 0;
+    });
+    
+    // Start timer to track measurement duration
+    _measurementTimer?.cancel();
+    _measurementTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      setState(() {
+        _measurementDurationSeconds++;
+      });
     });
     
     _hrSubscription = _sensor!.hrStream.listen((hr) {
@@ -202,6 +226,7 @@ class _MeditationViewState extends State<MeditationView> {
     _hrvSubscription = _sensor!.hrvStream.listen((hrv) {
       setState(() {
         _currentHrv = hrv['HRV_RMSSD'] ?? 40.0;
+        _currentSdnn = hrv['HRV_SDNN'] ?? 40.0;
         _hrvMeasurementCount++;
         
         // HRV becomes stable after receiving 3 measurements
@@ -216,6 +241,10 @@ class _MeditationViewState extends State<MeditationView> {
   
   void _checkStress() {
     if (_isMeditating || _dialogShown) return;
+    
+    // Don't check stress if HRV is not yet stable or still loading
+    if (!_hrvIsStable || _currentHrv < 0) return;
+    
     if (_detector.isStressed(_currentHr, _currentHrv)) {
       _checkSnoozeAndShowDialog();
     }
@@ -318,6 +347,7 @@ class _MeditationViewState extends State<MeditationView> {
     setState(() {
       _hrBeforeMeditation = _currentHr;
       _hrvBeforeMeditation = _currentHrv;
+      _sdnnBeforeMeditation = _currentSdnn;
       _isMeditating = true;
     });
     try {
@@ -350,9 +380,11 @@ class _MeditationViewState extends State<MeditationView> {
       barrierDismissible: false,
       builder: (context) => SuccessDialog(
         hrBefore: _hrBeforeMeditation,
-        hrvBefore: _hrvBeforeMeditation,
+        hrvRmssdBefore: _hrvBeforeMeditation,
+        hrvSdnnBefore: _sdnnBeforeMeditation,
         hrAfter: _currentHr,
-        hrvAfter: _currentHrv,
+        hrvRmssdAfter: _currentHrv,
+        hrvSdnnAfter: _currentSdnn,
       ),
     );
   }
@@ -392,8 +424,10 @@ class _MeditationViewState extends State<MeditationView> {
                           HrHrvDisplayNew(
                             hr: _currentHr,
                             hrv: _currentHrv,
+                            sdnn: _currentSdnn,
                             stressLevel: _detector.getStressCategory(_currentHr, _currentHrv),
                             isHrvStable: _hrvIsStable,
+                            measurementDurationSeconds: _measurementDurationSeconds,
                           ),
                           const SizedBox(height: 16),
                           // Show Chart Button when using real earable data
@@ -542,6 +576,7 @@ class _MeditationViewState extends State<MeditationView> {
     );
   }  @override
   void dispose() {
+    _measurementTimer?.cancel();
     _hrSubscription?.cancel();
     _hrvSubscription?.cancel();
     _sensor?.dispose();

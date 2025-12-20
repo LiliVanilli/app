@@ -22,9 +22,9 @@ class MockHrSensor implements HrSensorInterface {
   
   Timer? _timer;
   double _currentHr = 75.0; // Baseline heart rate
-  double _currentHrv = 40.0; // Baseline HRV (RMSSD)
+  double _currentHrv = 120.0; // Baseline HRV (RMSSD) - realistic value
   double _targetHr = 75.0;
-  double _targetHrv = 40.0;
+  double _targetHrv = 120.0;
   bool _isActive = false;
   
   final Random _random = Random();
@@ -49,16 +49,17 @@ class MockHrSensor implements HrSensorInterface {
       final hrNoise = _random.nextDouble() * 4 - 2; // +/- 2 BPM
       final hr = (_currentHr + hrNoise).clamp(50.0, 120.0);
       
-      final hrvNoise = _random.nextDouble() * 4 - 2; // +/- 2 ms
-      final hrv = (_currentHrv + hrvNoise).clamp(10.0, 80.0);
+      final hrvNoise = _random.nextDouble() * 8 - 4; // +/- 4 ms
+      final rmssd = (_currentHrv + hrvNoise).clamp(20.0, 200.0);
       
       _hrController.add(hr);
       
-      // Generate mock HRV data with consistent values
+      // Generate mock HRV data with realistic values matching real sensor
+      // SDNN is typically 2.5-3x lower than RMSSD
       _hrvController.add({
-        'HRV_SDNN': hrv * 1.2,  // SDNN typically 20% higher than RMSSD
-        'HRV_RMSSD': hrv,       // Use our calculated HRV
-        'HRV_pNN50': (hrv / 2).clamp(0.0, 40.0), // pNN50 correlates with HRV
+        'HRV_SDNN': rmssd / 2.7,  // SDNN: if RMSSD=120ms -> SDNN≈44ms (realistic!)
+        'HRV_RMSSD': rmssd,       // RMSSD
+        'HRV_pNN50': (rmssd / 3).clamp(0.0, 60.0), // pNN50 correlates with HRV
       });
     });
   }
@@ -74,20 +75,20 @@ class MockHrSensor implements HrSensorInterface {
   /// Triggers stress detection: HR > 95 OR HRV < 15
   void simulateStress() {
     _targetHr = 100.0;  // Well above 95 threshold
-    _targetHrv = 12.0;  // Well below 15 threshold
+    _targetHrv = 35.0;  // Low HRV indicates stress
   }
   
   /// Simulate relaxation (decrease HR, increase HRV)
   /// Triggers relaxation detection: HR < 75 AND HRV > 30
   void simulateRelaxation() {
     _targetHr = 65.0;   // Well below 75 threshold
-    _targetHrv = 45.0;  // Well above 30 threshold
+    _targetHrv = 150.0; // High HRV indicates relaxation
   }
   
   /// Reset to baseline
   void reset() {
     _targetHr = 75.0;
-    _targetHrv = 40.0;
+    _targetHrv = 120.0;
   }
   
   /// Dispose resources
