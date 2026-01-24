@@ -6,7 +6,6 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 import '../model/mock_hr_sensor.dart';
 import '../model/earable_hr_sensor.dart';
 import '../model/hr_sensor_interface.dart';
-import '../model/stress_detector.dart';
 import '../model/activity_detector.dart';
 import '../widgets/hr_hrv_display_new.dart';
 import '../widgets/hr_hrv_chart.dart';
