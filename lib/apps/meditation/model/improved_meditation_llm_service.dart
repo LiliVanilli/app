@@ -6,7 +6,20 @@ import 'meditation_cache.dart';
 
 final _logger = Logger();
 
-/// Improved LLM service with full user demographic integration
+/// LLM-powered meditation content generation service
+///
+/// Generates personalized, stress-adaptive meditation guidance using Google's Gemini.
+/// Falls back to pre-generated personalized texts when API is unavailable.
+///
+/// Features:
+/// - Real-time biosignal integration (current HR/HRV)
+/// - Adaptive content based on stress levels
+/// - User demographic personalization (age, preferences, style)
+/// - Multi-segment sessions with natural progression
+/// - Meditation style customization (calm, gentle, mindful)
+/// - Environment imagery (nature, ocean, mountain, etc.)
+///
+/// Uses Gemini 2.0 Flash with custom system prompts for meditation guidance.
 class ImprovedMeditationLLMService {
   late final GenerativeModel _model;
   ChatSession? _chatSession;

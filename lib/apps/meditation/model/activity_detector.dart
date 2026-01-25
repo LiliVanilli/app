@@ -4,8 +4,21 @@ import 'package:logger/logger.dart';
 
 final _logger = Logger();
 
-/// Detects physical activity from accelerometer and gyroscope data
-/// Helps distinguish between exercise-induced HR increase vs. stress
+/// Physical activity detection from IMU sensors
+///
+/// Analyzes accelerometer and gyroscope data to classify activity intensity.
+/// Helps distinguish between exercise-induced heart rate elevation vs. stress.
+///
+/// Based on research by Gjoreski et al. (2016) on activity recognition.
+///
+/// Activity Levels:
+/// - Resting: Minimal movement (sitting, lying)
+/// - Light: Slow walking, gentle movements
+/// - Moderate: Brisk walking, light exercise
+/// - Vigorous: Running, intense exercise
+/// - Intense: Sprinting, very high intensity
+///
+/// Uses moving average window (30 samples ~3s) to smooth readings.
 class ActivityDetector {
   // Thresholds based on research (Gjoreski et al. 2016)
   static const double _restingAccelThreshold = 0.15; // g (gravity units)

@@ -23,7 +23,15 @@ enum MeditationState {
   error,
 }
 
-/// Improved meditation controller with all new features
+/// Main controller for adaptive meditation sessions
+/// 
+/// Manages the complete meditation flow including:
+/// - Real-time biosignal monitoring (HR/HRV)
+/// - Personalized stress detection with activity recognition
+/// - LLM-generated meditation content
+/// - Text-to-speech guidance
+/// - Background music playback
+/// - Session analytics and history tracking
 class ImprovedMeditationController {
   final HrSensorInterface sensor;
   final ImprovedMeditationLLMService llmService;
