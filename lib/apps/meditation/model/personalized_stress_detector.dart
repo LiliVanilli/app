@@ -221,6 +221,11 @@ class PersonalizedStressDetector {
   }
   
   /// Check if ready to end meditation session
+  /// 
+  /// Adaptive relaxation criteria based on physiological feedback:
+  /// - Prioritizes HRV as primary stress indicator (more robust to noise)
+  /// - Accounts for individual baselines and relative improvement
+  /// - Allows early exit if deeply relaxed state is achieved
   bool isReadyToEndSession({
     required double startHr,
     required double startHrv,
@@ -228,19 +233,44 @@ class PersonalizedStressDetector {
     required double currentHrv,
     required int iterationCount,
   }) {
-    // Must have done at least 5 iterations for a meaningful session (increased from 3)
-    if (iterationCount < 5) return false;
+    // Must have done at least 2 iterations for a meaningful session
+    if (iterationCount < 2) return false;
     
-    // More strict criteria - require BOTH:
-    // 1. User is now relaxed (not stressed anymore) AND
-    // 2. Significant improvement achieved (15% in HR or 20% in HRV)
     final isNowRelaxed = isRelaxed(currentHr, currentHrv);
     final hrImprovement = (startHr - currentHr) / startHr;
     final hrvImprovement = (currentHrv - startHrv) / startHrv;
-    final significantImprovement = hrImprovement >= 0.15 || hrvImprovement >= 0.20;
+    final stressLevel = getStressLevel(currentHr, currentHrv);
     
-    // Must be both relaxed AND have improvement
-    return isNowRelaxed && significantImprovement;
+    // SCENARIO 1: Excellent HRV improvement (>30%)
+    // If HRV improves this much, person IS relaxed regardless of HR
+    // (HR reading might be inaccurate due to poor sensor contact)
+    if (hrvImprovement >= 0.30 && stressLevel < 40) {
+      return true; // Strong relaxation signal
+    }
+    
+    // SCENARIO 2: Very strong HRV improvement (>25%) + low stress
+    if (hrvImprovement >= 0.25 && stressLevel < 30) {
+      return true;
+    }
+    
+    // SCENARIO 3: Good HRV improvement (>20%) + person is now relaxed
+    if (hrvImprovement >= 0.20 && isNowRelaxed) {
+      return true;
+    }
+    
+    // SCENARIO 4: BOTH metrics improved significantly
+    // HR improved by 10%+ AND HRV improved by 20%+
+    if (hrImprovement >= 0.10 && hrvImprovement >= 0.20) {
+      return true;
+    }
+    
+    // SCENARIO 5: Person is clearly relaxed (even without big improvement)
+    // AND stress level is very low
+    if (isNowRelaxed && stressLevel < 20 && hrvImprovement >= 0.10) {
+      return true;
+    }
+    
+    return false;
   }
   
   /// Get reason why session can end (for logging/UI)
@@ -251,17 +281,29 @@ class PersonalizedStressDetector {
     required double currentHrv,
   }) {
     final isNowRelaxed = isRelaxed(currentHr, currentHrv);
-    final hrImprovement = ((startHr - currentHr) / startHr * 100);
-    final hrvImprovement = ((currentHrv - startHrv) / startHrv * 100);
+    final hrImprovement = (startHr - currentHr) / startHr;
+    final hrvImprovement = (currentHrv - startHrv) / startHrv;
+    final hrImprovementPct = hrImprovement * 100;
+    final hrvImprovementPct = hrvImprovement * 100;
+    final stressLevel = getStressLevel(currentHr, currentHrv);
     
-    if (isNowRelaxed) {
-      return 'Person is now relaxed (HR: ${currentHr.toStringAsFixed(0)}, HRV: ${currentHrv.toStringAsFixed(0)})';
-    } else if (hrImprovement >= 10) {
-      return 'Heart rate improved by ${hrImprovement.toStringAsFixed(1)}%';
-    } else if (hrvImprovement >= 10) {
-      return 'HRV improved by ${hrvImprovement.toStringAsFixed(1)}%';
+    // Match the scenarios from isReadyToEndSession
+    if (hrvImprovement >= 0.30 && stressLevel < 40) {
+      return 'Excellent HRV improvement (${hrvImprovementPct.toStringAsFixed(1)}%) - deeply relaxed';
+    } else if (hrvImprovement >= 0.25 && stressLevel < 30) {
+      return 'Strong HRV improvement (${hrvImprovementPct.toStringAsFixed(1)}%) and low stress';
+    } else if (hrvImprovement >= 0.20 && isNowRelaxed) {
+      return 'Good HRV improvement (${hrvImprovementPct.toStringAsFixed(1)}%) - now relaxed';
+    } else if (hrImprovement >= 0.10 && hrvImprovement >= 0.20) {
+      return 'Both metrics improved (HR: ${hrImprovementPct.toStringAsFixed(1)}%, HRV: ${hrvImprovementPct.toStringAsFixed(1)}%)';
+    } else if (isNowRelaxed && stressLevel < 20 && hrvImprovement >= 0.10) {
+      return 'Very relaxed state achieved (stress: ${stressLevel.toStringAsFixed(0)}%)';
+    } else if (hrImprovement < 0) {
+      return 'Heart rate elevated (HR: ${currentHr.toStringAsFixed(0)} BPM) - continue practicing';
+    } else if (hrvImprovement < 0.15) {
+      return 'HRV improving (${hrvImprovementPct.toStringAsFixed(1)}%) - keep going';
     }
-    return 'Continued practice needed';
+    return 'Making progress - continue with the meditation';
   }
 }
 

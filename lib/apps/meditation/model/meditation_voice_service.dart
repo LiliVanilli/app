@@ -18,6 +18,7 @@ class MeditationVoiceService {
   
   bool _isInitialized = false;
   bool _isSpeaking = false;
+  bool _usePremiumVoice = false; // User preference for premium voice
   
   // Google Cloud TTS - high quality female voice
   static const Map<String, String> _femaleVoice = {
@@ -29,59 +30,115 @@ class MeditationVoiceService {
   static const Map<String, Map<String, double>> _styleSettings = {
     'calm and empathetic': {
       'pitch': -2.0,
-      'speakingRate': 0.8,
+      'speakingRate': 1.0, // Increased from 0.8 for more natural pace
     },
     'gentle and soothing': {
       'pitch': -3.0,
-      'speakingRate': 0.75,
+      'speakingRate': 0.95, // Increased from 0.75
     },
     'warm and compassionate': {
       'pitch': -1.5,
-      'speakingRate': 0.8,
+      'speakingRate': 1.0, // Increased from 0.8
     },
     'peaceful and mindful': {
       'pitch': -2.5,
-      'speakingRate': 0.7,
+      'speakingRate': 0.9, // Increased from 0.7
     },
   };
   
   String _meditationStyle = 'calm and empathetic';
   
-  Future<void> initialize({String voiceGender = 'female', String? meditationStyle}) async {
+  Future<void> initialize({
+    String voiceGender = 'female', 
+    String? meditationStyle,
+    bool usePremiumVoice = false,
+  }) async {
     _meditationStyle = meditationStyle ?? 'calm and empathetic';
+    _usePremiumVoice = usePremiumVoice;
     
-    _logger.i('🎤 Initializing voice (style: $_meditationStyle)');
+    _logger.i('Initializing voice (style: $_meditationStyle, premium: $_usePremiumVoice)');
     
     await _initializeFlutterTts();
     
     _isInitialized = true;
-    _logger.i('✓ Voice ready');
+    // Check if premium voice is actually available
+    final willUsePremium = _usePremiumVoice && MeditationConfig.hasValidTtsKey;
+    _logger.i('Voice ready (${willUsePremium ? "using PREMIUM Google Cloud TTS (\$\$\$)" : "using FREE Flutter TTS"})');
   }
   
   Future<void> _initializeFlutterTts() async {
     try {
       await _flutterTts.setLanguage('en-US');
-      await _flutterTts.setSpeechRate(0.5); // Much slower for meditation
+      
+      // Optimized settings for calming meditation voice
+      await _flutterTts.setSpeechRate(0.42); // Slow and calming (was 0.5)
       await _flutterTts.setVolume(1.0);
-      await _flutterTts.setPitch(0.85);
+      await _flutterTts.setPitch(0.90); // Slightly higher for more natural sound (was 0.85)
+      
+      // CRITICAL: Configure audio session to NOT stop background music
+      // Use 'playback' category with 'mixWithOthers' and 'duckOthers' options
+      await _flutterTts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+          IosTextToSpeechAudioCategoryOptions.duckOthers
+        ],
+      );
       
       final voices = await _flutterTts.getVoices;
       if (voices != null && voices.isNotEmpty) {
         final enVoices = voices.where((v) => 
-          v['locale']?.toString().contains('en-US') ?? false
+          v['locale']?.toString().contains('en') ?? false
         ).toList();
         
-        // Look for enhanced female voice
+        _logger.i('Available TTS voices: ${enVoices.length}');
+        
+        // Priority order for best free voice:
+        // 1. Enhanced/Premium female voices
+        // 2. Any female voice
+        // 3. Natural-sounding voices
+        // 4. Default voice
+        
+        String? selectedVoice;
+        
+        // Try to find enhanced/premium female voice
         for (var voice in enVoices) {
           final name = voice['name']?.toString().toLowerCase() ?? '';
-          if (name.contains('female') && (name.contains('enhanced') || name.contains('premium'))) {
+          if (name.contains('female') && (name.contains('enhanced') || name.contains('premium') || name.contains('neural'))) {
+            selectedVoice = voice['name'].toString();
             await _flutterTts.setVoice({
               'name': voice['name'].toString(),
               'locale': voice['locale'].toString(),
             });
-            _logger.i('✅ Flutter TTS fallback: ${voice['name']}');
+            _logger.i('Using enhanced voice: ${voice['name']}');
             break;
           }
+        }
+        
+        // Fallback to any female voice
+        if (selectedVoice == null) {
+          for (var voice in enVoices) {
+            final name = voice['name']?.toString().toLowerCase() ?? '';
+            if (name.contains('female') || name.contains('woman')) {
+              selectedVoice = voice['name'].toString();
+              await _flutterTts.setVoice({
+                'name': voice['name'].toString(),
+                'locale': voice['locale'].toString(),
+              });
+              _logger.i('Using female voice: ${voice['name']}');
+              break;
+            }
+          }
+        }
+        
+        // Fallback to first available voice
+        if (selectedVoice == null && enVoices.isNotEmpty) {
+          final voice = enVoices.first;
+          await _flutterTts.setVoice({
+            'name': voice['name'].toString(),
+            'locale': voice['locale'].toString(),
+          });
+          _logger.i('Using default voice: ${voice['name']}');
         }
       }
     } catch (e) {
@@ -102,27 +159,85 @@ class MeditationVoiceService {
     
     _isSpeaking = true;
     
+    // Clean text for better TTS pronunciation
+    String cleanedText = _cleanTextForTTS(text);
+    
     try {
-      // Try Google Cloud TTS first for high quality
-      final success = await _tryGoogleCloudTts(text);
-      if (!success) {
-        // Fallback to Flutter TTS
-        await _speakWithFlutterTts(text);
+      // Only try Google Cloud TTS if user has premium voice enabled
+      if (_usePremiumVoice) {
+        final success = await _tryGoogleCloudTts(cleanedText);
+        if (!success) {
+          // Fallback to Flutter TTS if premium fails
+          _logger.w('Premium voice failed, falling back to free voice');
+          await _speakWithFlutterTts(cleanedText);
+        }
+      } else {
+        // Use free Flutter TTS
+        await _speakWithFlutterTts(cleanedText);
       }
     } catch (e) {
       _logger.e('Error during speech: $e');
-      await _speakWithFlutterTts(text);
+      await _speakWithFlutterTts(cleanedText);
     } finally {
       _isSpeaking = false;
     }
   }
   
+  /// Clean text for better TTS pronunciation
+  String _cleanTextForTTS(String text) {
+    _logger.i('Cleaning text: "${text.substring(0, text.length > 100 ? 100 : text.length)}..."');
+    
+    // Replace abbreviations with full words for smoother speech
+    String cleaned = text
+        // Replace BPM (case-insensitive, any position)
+        .replaceAllMapped(RegExp(r'(\d+)\s*BPM', caseSensitive: false), (match) {
+          return '${match.group(1)} beats per minute';
+        })
+        .replaceAll(RegExp(r'\bBPM\b', caseSensitive: false), 'beats per minute')
+        // Replace other abbreviations
+        .replaceAll(RegExp(r'\bHR\b'), 'heart rate')
+        .replaceAll(RegExp(r'\bHRV\b'), 'heart rate variability')
+        // Replace milliseconds with spelled-out version
+        .replaceAllMapped(RegExp(r'(\d+)\s*ms\b', caseSensitive: false), (match) {
+          return '${match.group(1)} milliseconds';
+        })
+        .replaceAll(RegExp(r'\bms\b'), 'milliseconds')
+        // Remove extra whitespace and normalize
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    
+    if (cleaned != text) {
+      _logger.i('✨ Cleaned text: "${cleaned.substring(0, cleaned.length > 100 ? 100 : cleaned.length)}..."');
+    }
+    
+    return cleaned;
+  }
+  
   Future<bool> _tryGoogleCloudTts(String text) async {
     try {
-      // Check cache first
-      final cachedFile = await MeditationCache.getCachedAudio(text);
+      // Check cache first (separate cache for premium vs free)
+      final cachedFile = await MeditationCache.getCachedAudio(text, isPremiumVoice: true);
       if (cachedFile != null) {
-        _logger.i('✓ Using cached TTS audio (saves 1 API request)');
+        _logger.i('Using cached premium TTS audio (saves 1 API request)');
+        
+        // Configure audio context to mix with background music
+        await _audioPlayer.setAudioContext(AudioContext(
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.playback,
+            options: {
+              AVAudioSessionOptions.mixWithOthers,
+              AVAudioSessionOptions.duckOthers,
+            },
+          ),
+          android: AudioContextAndroid(
+            isSpeakerphoneOn: false,
+            stayAwake: false,
+            contentType: AndroidContentType.speech,
+            usageType: AndroidUsageType.media,
+            audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+          ),
+        ));
+        
         await _audioPlayer.play(DeviceFileSource(cachedFile.path));
         await _audioPlayer.onPlayerComplete.first;
         return true;
@@ -131,7 +246,7 @@ class MeditationVoiceService {
       final voiceConfig = _femaleVoice;
       final styleSettings = _styleSettings[_meditationStyle] ?? _styleSettings['calm and empathetic']!;
       
-      _logger.i('🎤 Google Cloud TTS: ${voiceConfig['name']} - API REQUEST');
+      _logger.i('Google Cloud TTS: ${voiceConfig['name']} - API REQUEST');
       
       if (MeditationConfig.googleCloudTtsApiKey == 'NONE' || 
           MeditationConfig.googleCloudTtsApiKey == 'YOUR_TTS_API_KEY_HERE') {
@@ -159,7 +274,7 @@ class MeditationVoiceService {
       ).timeout(const Duration(seconds: 15));
       
       if (response.statusCode != 200) {
-        _logger.w('⚠️ Google TTS API error: ${response.statusCode} - Using fallback');
+        _logger.w('Google TTS API error: ${response.statusCode} - Using fallback');
         return false;
       }
       
@@ -173,16 +288,41 @@ class MeditationVoiceService {
       
       final audioBytes = base64Decode(audioContent);
       
-      // Cache the audio for future use
-      final cachedAudioFile = await MeditationCache.cacheAudio(text, audioBytes);
+      // Cache the audio for future use (mark as premium)
+      final cachedAudioFile = await MeditationCache.cacheAudio(text, audioBytes, isPremiumVoice: true);
       
       // Play from cache if successfully cached, otherwise use temp file
       final playFile = cachedAudioFile ?? await _createTempFile(audioBytes);
       
-      _logger.i('✓ Playing high-quality Google Cloud TTS audio');
+      _logger.i('Playing high-quality Google Cloud TTS audio');
+      
+      // CRITICAL: Configure audio context to mix with background music
+      // This allows TTS voice to play while background ambience continues
+      await _audioPlayer.setAudioContext(AudioContext(
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: {
+            AVAudioSessionOptions.mixWithOthers,
+            AVAudioSessionOptions.duckOthers,
+          },
+        ),
+        android: AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          stayAwake: false,
+          contentType: AndroidContentType.speech,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck, // Duck background, don't stop it
+        ),
+      ));
+      
+      // Set release mode to automatically release resources after playback
+      await _audioPlayer.setReleaseMode(ReleaseMode.release);
       
       await _audioPlayer.play(DeviceFileSource(playFile.path));
       await _audioPlayer.onPlayerComplete.first;
+      
+      // Small delay before next segment to prevent audio "pop"
+      await Future.delayed(Duration(milliseconds: 100));
       
       // Only delete if it was a temp file (not cached)
       if (cachedAudioFile == null) {
@@ -193,11 +333,11 @@ class MeditationVoiceService {
         }
       }
       
-      _logger.i('✓ Google Cloud TTS playback complete');
+      _logger.i('Google Cloud TTS playback complete');
       return true;
       
     } catch (e) {
-      _logger.w('⚠️ Google Cloud TTS error: $e - Using fallback');
+      _logger.w('Google Cloud TTS error: $e - Using fallback');
       return false;
     }
   }
@@ -213,6 +353,15 @@ class MeditationVoiceService {
     _logger.i('Using Flutter TTS fallback');
     
     try {
+      // Ensure TTS also allows mixing and ducking
+      await _flutterTts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+          IosTextToSpeechAudioCategoryOptions.duckOthers
+        ],
+      );
+
       final completer = Completer<void>();
       
       _flutterTts.setCompletionHandler(() {
@@ -228,8 +377,26 @@ class MeditationVoiceService {
         if (!completer.isCompleted) completer.complete();
       });
 
-      await _flutterTts.speak(text);
-      await completer.future.timeout(const Duration(seconds: 60));
+      // Sanitize text: Remove markdown and "..." which TTS reads as "dot dot"
+      String cleanText = text
+          .replaceAll('...', ', ') // Replace ellipses with comma
+          .replaceAll('..', ', ')  // Replace double dots
+          .replaceAll('*', '')     // Remove bold/italic markers
+          .replaceAll('#', '')     // Remove headers
+          .replaceAll('"', '')     // Remove quotes if needed
+          .replaceAll(RegExp(r'\s+'), ' ') // Collapse whitespace
+          .trim();
+
+      await _flutterTts.speak(cleanText);
+      
+      // Wait for completion with timeout
+      try {
+        await completer.future.timeout(const Duration(seconds: 45)); // Reduced to 45s
+      } catch (e) {
+        _logger.w('TTS timed out (likely interruption): $e. Continuing...');
+        // If timeout occurs, forcing a stop might help reset state for next sentence
+        await _flutterTts.stop(); 
+      }
       
     } catch (e) {
       _logger.e('Flutter TTS error: $e');
@@ -239,7 +406,13 @@ class MeditationVoiceService {
   Future<void> stop() async {
     _isSpeaking = false;
     await _flutterTts.stop();
-    await _audioPlayer.stop();
+    // Use release() for smoother audio stop (prevents "pop" sound)
+    try {
+      await _audioPlayer.release();
+    } catch (e) {
+      // Fallback to stop if release fails
+      await _audioPlayer.stop();
+    }
   }
   
   Future<void> pause() async {

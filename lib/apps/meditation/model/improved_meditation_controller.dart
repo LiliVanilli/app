@@ -4,11 +4,11 @@ import 'package:logger/logger.dart';
 import 'hr_sensor_interface.dart';
 import 'improved_meditation_llm_service.dart';
 import 'meditation_voice_service.dart';
-import 'meditation_config.dart';
 import 'user_account.dart';
 import 'personalized_stress_detector.dart';
 import 'meditation_history.dart';
 import 'activity_detector.dart';
+import 'meditation_cache.dart';
 
 final _logger = Logger();
 
@@ -65,6 +65,8 @@ class ImprovedMeditationController {
   bool _isBaselineReady = false;
   double _peakStressLevel = 0.0;
   Timer? _sessionTimer;
+  DateTime? _lastSensorDataTime; // Track when we last received sensor data
+  static const int _sensorTimeoutSeconds = 45; // Stop if no data for 45 seconds (increased from 15 to prevent false timeouts)
   
   // Monitoring
   Timer? _stressMonitorTimer;
@@ -124,6 +126,7 @@ class ImprovedMeditationController {
     try {
       _logger.i('Starting meditation session');
       _sessionStartTime = DateTime.now();
+      _lastSensorDataTime = DateTime.now(); // Initialize sensor timeout tracking
       _iterationCount = 0;
       _isBaselineReady = false;
       _meditationAutoStarted = false;
@@ -166,17 +169,49 @@ class ImprovedMeditationController {
   }
   
   void _subscribeToSensor() {
+    // Reset sensor timeout tracking to prevent false timeouts on reconnect
+    // This prevents false timeout detection if reconnecting after a disconnect
+    _lastSensorDataTime = null;
+    
+    _logger.i('Subscribing to sensor streams: ${sensor.runtimeType}');
+    
+    int hrCount = 0;
     _hrSubscription = sensor.hrStream.listen((hr) {
+      hrCount++;
+      if (hrCount <= 3) {
+        _logger.i('HR Stream #$hrCount: $hr BPM (sensor: ${sensor.runtimeType})');
+      }
+      
       _currentHr = hr;
+      _lastSensorDataTime = DateTime.now(); // Track data reception
       _refineBaselineDuringCalibration(); // Adaptively refine baseline during first 30s
       onBiosignalUpdate?.call(_currentHr, _currentHrv);
+      
+      // Log to verify subscriptions are still active after meditation ends
+      if (_state == MeditationState.completed || _state == MeditationState.idle) {
+        _logger.i('HR data received after session: HR=$hr (state: $_state)');
+      }
     });
     
+    int hrvCount = 0;
     _hrvSubscription = sensor.hrvStream.listen((hrvData) {
+      hrvCount++;
+      if (hrvCount <= 3) {
+        _logger.i('HRV Stream #$hrvCount: $hrvData (sensor: ${sensor.runtimeType})');
+      }
+      
       _currentHrv = hrvData['HRV_RMSSD'] ?? hrvData['rmssd'] ?? hrvData['RMSSD'] ?? _currentHrv;
+      _lastSensorDataTime = DateTime.now(); // Track data reception
       _refineBaselineDuringCalibration(); // Adaptively refine baseline during first 30s
       onBiosignalUpdate?.call(_currentHr, _currentHrv);
+      
+      // Log to verify subscriptions are still active after meditation ends
+      if (_state == MeditationState.completed || _state == MeditationState.idle) {
+        _logger.i('HRV data received after session: HRV=$_currentHrv (state: $_state)');
+      }
     });
+    
+    _logger.i('Subscribed to HR and HRV streams');
   }
   
   Future<void> _measureBaseline() async {
@@ -187,7 +222,7 @@ class ImprovedMeditationController {
     _baselineHr = researchBaseline['baselineHr']!;
     _baselineHrv = researchBaseline['baselineHrv']!;
     
-    _logger.i('📊 Starting with research baseline: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
+    _logger.i('Starting with research baseline: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
     _logger.i('   Based on: ${userAccount.age}y, ${userAccount.gender}, ${userAccount.fitnessLevel}');
     
     // Start calibration period
@@ -243,6 +278,14 @@ class ImprovedMeditationController {
     _baselineHrv = (researchHrv * researchWeight) + (measuredHrv * measuredWeight);
   }
   
+  /// Check if sensor data has timed out (no new data for too long)
+  bool _hasSensorTimedOut() {
+    if (_lastSensorDataTime == null) return false; // No data received yet
+    
+    final elapsed = DateTime.now().difference(_lastSensorDataTime!).inSeconds;
+    return elapsed > _sensorTimeoutSeconds;
+  }
+  
   /// Complete calibration and finalize baseline
   void _finishCalibration() {
     if (!_isCalibrating) return;
@@ -258,10 +301,10 @@ class ImprovedMeditationController {
       _baselineHr = (measuredHr * 0.7) + (researchBaseline['baselineHr']! * 0.3);
       _baselineHrv = (measuredHrv * 0.7) + (researchBaseline['baselineHrv']! * 0.3);
       
-      _logger.i('✓ Calibration complete! Refined baseline: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
+      _logger.i('Calibration complete! Refined baseline: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
       _logger.i('  Collected ${_hrMeasurements.length} HR and ${_hrvMeasurements.length} HRV measurements');
     } else {
-      _logger.i('✓ Calibration complete (keeping research baseline - insufficient measurements)');
+      _logger.i('Calibration complete (keeping research baseline - insufficient measurements)');
     }
     
     _sendStatus('Meditation in progress...');
@@ -281,45 +324,25 @@ class ImprovedMeditationController {
       // Notify about segment progress
       onSegmentUpdate?.call(_iterationCount, maxIterations);
       
-      _setState(MeditationState.waitingForBiosignals);
+      // Avoid state change here to prevent UI flicker
+      // Just wait for biosignals silently without triggering state changes
+      // _setState(MeditationState.waitingForBiosignals); // REMOVED to fix flickering
       
-      // Check relaxation status multiple times during waiting period
-      // This allows faster session completion if user becomes relaxed
-      for (int i = 0; i < 3; i++) {
-        await Future.delayed(const Duration(seconds: 1));
-        
-        if (_state == MeditationState.idle) break; // User stopped
-        
-        // Get activity level if available
-        ActivityLevel? activityLevel;
-        try {
-          final dynamic dynamicSensor = sensor;
-          activityLevel = dynamicSensor.activityLevel as ActivityLevel?;
-        } catch (e) {
-          // Sensor doesn't support activity detection - that's OK
-        }
-        
-        // Check if ready to end (relaxed) - check every second!
-        if (_iterationCount >= 2 && stressDetector.isReadyToEndSession(
-            startHr: _baselineHr,
-            startHrv: _baselineHrv,
-            currentHr: _currentHr,
-            currentHrv: _currentHrv,
-            iterationCount: _iterationCount
-        )) {
-          final reason = stressDetector.getEndSessionReason(
-            startHr: _baselineHr,
-            startHrv: _baselineHrv,
-            currentHr: _currentHr,
-            currentHrv: _currentHrv,
-          );
-          _logger.i('✓ Session complete (during waiting): $reason');
-          await _completeSession();
-          return;
-        }
-      }
+      // Wait for biosignals (don't interrupt mid-segment!)
+      // We'll check for relaxation AFTER the next segment, not during waiting
+      await Future.delayed(const Duration(seconds: 3));
       
       if (_state == MeditationState.idle) break; // User stopped
+      
+      // Check for sensor data timeout indicating connection loss
+      if (_hasSensorTimedOut()) {
+        _logger.e('Sensor timeout detected - no new data for $_sensorTimeoutSeconds seconds!');
+        _logger.e('   Connection likely lost. Ending meditation gracefully.');
+        _sendStatus('Connection lost - ending session');
+        // Call _completeSession() instead of stopSession() to speak a completion message
+        await _completeSession();
+        return;
+      }
       
       // Get activity level if available
       ActivityLevel? activityLevel;
@@ -357,7 +380,7 @@ class ImprovedMeditationController {
           currentHr: _currentHr,
           currentHrv: _currentHrv,
         );
-        _logger.i('✓ Session complete: $reason');
+        _logger.i('Session complete: $reason');
         await _completeSession();
         return;
       }
@@ -396,12 +419,12 @@ class ImprovedMeditationController {
                currentHr: _currentHr,
                currentHrv: _currentHrv,
              );
-             _logger.i('✓ Session complete after segment: $reason');
+             _logger.i('Session complete after segment: $reason');
              await _completeSession();
              return;
         }
 
-        await Future.delayed(const Duration(seconds: 3));
+        await Future.delayed(const Duration(milliseconds: 1500)); // Reduced from 3s to 1.5s for smoother flow
         
       } catch (e) {
         _logger.e('Error in loop: $e');
@@ -421,69 +444,52 @@ class ImprovedMeditationController {
     
     // Lower background ambience during speech
     try {
-      await backgroundMusicPlayer.setVolume(0.08); // Very quiet during voice (8%)
+      await backgroundMusicPlayer.setVolume(0.25); // Gentle background during voice (25%)
     } catch (e) {
       // Ignore if not playing
     }
     
     try {
-      bool wasCancelled = false;
-      final speakFuture = voiceService.speak(text);
-      
-      // Check every 200ms if we should stop
-      final checkTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) async {
-        // Stop immediately if session ended or user relaxed
-        final shouldEnd = _state == MeditationState.idle || 
-            (_iterationCount >= 2 && stressDetector.isReadyToEndSession(
-              startHr: _baselineHr,
-              startHrv: _baselineHrv,
-              currentHr: _currentHr,
-              currentHrv: _currentHrv,
-              iterationCount: _iterationCount
-            ));
-            
-        if (shouldEnd) {
-          wasCancelled = true;
-          await voiceService.stop();
-          timer.cancel();
-          _logger.i('🛑 CANCELLED SPEAKING - iteration=$_iterationCount, state=$_state, isReadyToEnd=${stressDetector.isReadyToEndSession(
-            startHr: _baselineHr,
-            startHrv: _baselineHrv,
-            currentHr: _currentHr,
-            currentHrv: _currentHrv,
-            iterationCount: _iterationCount
-          )}');
-        }
-      });
-      
-      // Wait for speaking to complete or be cancelled
-      await speakFuture;
-      checkTimer.cancel();
-      
-      // If cancelled due to relaxation, SET STATE TO IDLE and complete session
-      if (wasCancelled) {
-        _logger.i('✓ Session cancelled during speech - completing now');
-        _setState(MeditationState.idle); // STOP THE LOOP!
-        if (_iterationCount >= 2) {
-          await _completeSession();
-        }
-        return; // Exit immediately
+      // Check if user stopped the session BEFORE speaking
+      if (_state == MeditationState.idle) {
+        _logger.i('Session stopped before speaking - skipping speech');
+        return;
       }
+      
+      // Let the current segment finish completely without interruption
+      await voiceService.speak(text);
+      
+      // After speech completes, check if we should end the session
+      if (_state == MeditationState.idle) {
+        _logger.i('Session stopped during speech - exiting gracefully');
+        return;
+      }
+      
+      // Don't check for relaxation here - it's handled in the main loop
+      // This prevents duplicate completion calls
+      
     } catch (e) {
       _logger.e('Speech error: $e');
     }
     
     // Restore ambience volume after speech
     try {
-      await backgroundMusicPlayer.setVolume(0.15); // Back to 15%
+      await backgroundMusicPlayer.setVolume(0.30); // Back to 30%
     } catch (e) {
       // Ignore if not playing
     }
   }
   
   Future<void> _completeSession() async {
-    if (_state == MeditationState.completed || _state == MeditationState.idle) return;
+    // Ensure idempotency for session completion
+    if (_state == MeditationState.completed || 
+        _state == MeditationState.idle ||
+        _state == MeditationState.generatingContent) {
+      _logger.w('_completeSession() blocked - already completing or completed (state: $_state)');
+      return;
+    }
     
+    _logger.i('Starting session completion...');
     _setState(MeditationState.generatingContent);
     
     try {
@@ -519,6 +525,13 @@ class ImprovedMeditationController {
     _sendStatus('Session complete!');
     _meditationAutoStarted = false;
     
+    // Keep monitoring active for post-session analytics
+    // The app should continue monitoring HR/HRV to:
+    // 1. Display real-time values to the user
+    // 2. Detect if user becomes stressed again after cooldown
+    // Subscriptions are kept active - they're only cancelled in stopSession() or dispose()
+    _logger.i('Session complete - HR/HRV monitoring continues');
+    
     onSessionComplete?.call();
   }
   
@@ -531,14 +544,47 @@ class ImprovedMeditationController {
     _isPaused = false;
     _meditationAutoStarted = false;
     
-    // Stop everything
+    // Stop audio playback
     await voiceService.stop();
     await backgroundMusicPlayer.stop();
     
-    _hrSubscription?.cancel();
-    _hrvSubscription?.cancel();
+    _logger.i('Session stopped - biosignal monitoring continues');
+  }
+  
+  /// Get personalized congratulatory message when user becomes relaxed
+  String _getCongratulatoryMessage() {
+    final name = userAccount.name;
     
-    _logger.i('Session stopped');
+    // Personalized messages based on user's meditation style
+    final messages = {
+      'calm and empathetic': [
+        '$name, you did it! I\'m so proud of you. You\'ve found your peace.',
+        'Wonderful, $name! You\'ve reached a beautiful state of calm. Well done.',
+        '$name, this is amazing! You\'re completely relaxed now. You should be proud.',
+      ],
+      'gentle and soothing': [
+        'Beautiful work, $name. You\'re peaceful now. Rest in this lovely calm.',
+        '$name, you\'ve done so well. Feel how relaxed you are. Just perfect.',
+        'Oh, $name, you\'ve found it. This beautiful peace. Well done, dear.',
+      ],
+      'warm and compassionate': [
+        '$name, I\'m really proud of you! You\'ve worked hard and found your calm.',
+        'You did it, $name! You\'ve reached such a peaceful state. Excellent work.',
+        'Wonderful, $name! You should feel proud. You\'ve achieved real relaxation.',
+      ],
+      'peaceful and mindful': [
+        'Well done, $name. You\'ve arrived at a place of deep calm. Notice how peaceful you feel.',
+        '$name, you\'ve done it. Observe this state of relaxation you\'ve created.',
+        'Excellent, $name. You\'re now in a truly relaxed state. Acknowledge this achievement.',
+      ],
+    };
+    
+    // Get messages for user's style, or use default
+    final styleMessages = messages[userAccount.meditationStyle] ?? messages['warm and compassionate']!;
+    
+    // Rotate through messages
+    final index = _iterationCount % styleMessages.length;
+    return styleMessages[index];
   }
   
   /// Pause session - PROPERLY  
@@ -579,7 +625,7 @@ class ImprovedMeditationController {
     _baselineHrv = researchBaseline['baselineHrv']!;
     _isBaselineReady = true;
     
-    _logger.i('📊 Using research baseline: HR=${_baselineHr.toStringAsFixed(1)} BPM, HRV=${_baselineHrv.toStringAsFixed(1)} ms');
+    _logger.i('Using research baseline: HR=${_baselineHr.toStringAsFixed(1)} BPM, HRV=${_baselineHrv.toStringAsFixed(1)} ms');
     _logger.i('   Profile: ${userAccount.age}y ${userAccount.gender}, ${userAccount.fitnessLevel} fitness');
     
     // Refine with measured values after 30 seconds
@@ -588,7 +634,7 @@ class ImprovedMeditationController {
         // Weighted average: 60% measured + 40% research
         _baselineHr = (_currentHr * 0.6) + (_baselineHr * 0.4);
         _baselineHrv = (_currentHrv * 0.6) + (_baselineHrv * 0.4);
-        _logger.i('✓ Baseline refined with measurements: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
+        _logger.i('Baseline refined with measurements: HR=${_baselineHr.toStringAsFixed(1)}, HRV=${_baselineHrv.toStringAsFixed(1)}');
       }
     });
     
@@ -598,14 +644,12 @@ class ImprovedMeditationController {
       
       // Get activity level from sensor (if available)
       ActivityLevel? activityLevel;
-      if (sensor is HrSensorInterface) {
-        // Try to get activity level if sensor supports it
-        try {
-          final dynamic dynamicSensor = sensor;
-          activityLevel = dynamicSensor.activityLevel as ActivityLevel?;
-        } catch (e) {
-          // Sensor doesn't support activity detection - that's OK
-        }
+      // Try to get activity level if sensor supports it
+      try {
+        final dynamic dynamicSensor = sensor;
+        activityLevel = dynamicSensor.activityLevel as ActivityLevel?;
+      } catch (e) {
+        // Sensor doesn't support activity detection - that's OK
       }
       
       final isStressed = stressDetector.isStressed(_currentHr, _currentHrv, activityLevel: activityLevel);
@@ -646,6 +690,22 @@ class ImprovedMeditationController {
     };
   }
   
+  /// Get current stress category as string
+  String get currentStressCategory {
+    if (_currentHrv < 0) return 'measuring';
+    
+    // Get activity level from sensor if available
+    ActivityLevel? activityLevel;
+    try {
+      final dynamic dynamicSensor = sensor;
+      activityLevel = dynamicSensor.activityLevel as ActivityLevel?;
+    } catch (e) {
+      // Sensor doesn't support activity detection
+    }
+    
+    return stressDetector.getStressCategory(_currentHr, _currentHrv, activityLevel: activityLevel);
+  }
+  
   void _startSessionTimer() {
     _sessionTimer?.cancel();
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -661,6 +721,7 @@ class ImprovedMeditationController {
     String? audioFile;
     try {
       final environment = userAccount.preferredEnvironment.toLowerCase();
+      _logger.i('Starting background ambience for environment: "$environment"');
       
       // Map environment preference to audio file
       if (environment.contains('ocean') || environment.contains('beach')) {
@@ -676,39 +737,98 @@ class ImprovedMeditationController {
       }
       
       if (audioFile != null) {
-        _logger.i('🎵 Attempting to play: $audioFile');
-        await backgroundMusicPlayer.setReleaseMode(ReleaseMode.loop);
-        await backgroundMusicPlayer.setVolume(0.15); // Quiet background (15% volume)
-        // Note: AssetSource automatically ensures the path is correct for Flutter assets
-        // depending on configuration. Since files are in root assets/, we pass just the filename
-        // and AssetSource adds 'assets/' prefix by default.
-        await backgroundMusicPlayer.play(AssetSource(audioFile));
-        _logger.i('Background ambience playing at 15% volume');
+        _logger.i('Selected audio file: $audioFile');
+        
+        try {
+          _logger.d('Setting release mode to loop...');
+          await backgroundMusicPlayer.setReleaseMode(ReleaseMode.loop);
+          
+          // Configure audio context to allow mixing with TTS
+          _logger.d('Configuring audio context...');
+          final AudioContext audioContext = AudioContext(
+            iOS: AudioContextIOS(
+              category: AVAudioSessionCategory.playback,
+              options: {
+                AVAudioSessionOptions.mixWithOthers,
+                // AVAudioSessionOptions.duckOthers, // Disabled: causing too much volume drop?
+              },
+            ),
+            android: AudioContextAndroid(
+              isSpeakerphoneOn: true,
+              stayAwake: true,
+              contentType: AndroidContentType.music,
+              usageType: AndroidUsageType.media,
+              audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+            ),
+          );
+          
+          // Apply context to this player
+          _logger.d('Applying audio context...');
+          await backgroundMusicPlayer.setAudioContext(audioContext); 
+          
+          _logger.d('Setting volume to 60%...');
+          await backgroundMusicPlayer.setVolume(0.60);
+          
+          // Note: AssetSource automatically ensures the path is correct for Flutter assets
+          // depending on configuration. Since files are in root assets/, we pass just the filename
+          // and AssetSource adds 'assets/' prefix by default.
+          _logger.i('Playing: AssetSource("$audioFile")');
+          await backgroundMusicPlayer.play(AssetSource(audioFile));
+          
+          _logger.i('Background ambience playing successfully at 60% volume');
+        } catch (e, stackTrace) {
+          _logger.e('Failed to play $audioFile: $e');
+          _logger.e('Stack trace: $stackTrace');
+        }
       } else {
-        _logger.w('No specific audio file for environment: $environment. Using default.');
+        _logger.w('No specific audio file for environment: "$environment". Using default.');
         // Fallback to default meditation sound if available
         try {
            audioFile = 'meditation_sound.mp3';
+           _logger.i('Trying default: $audioFile');
            await backgroundMusicPlayer.setReleaseMode(ReleaseMode.loop);
-           await backgroundMusicPlayer.setVolume(0.15);
+           await backgroundMusicPlayer.setVolume(0.30);
            await backgroundMusicPlayer.play(AssetSource(audioFile));
+           _logger.i('Default background sound playing');
         } catch (e) {
            _logger.w('Default background sound failed: $e');
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       _logger.e('Background ambience failed: $e');
       _logger.e('Tried to play: $audioFile');
+      _logger.e('Stack trace: $stackTrace');
     }
   }
   
+  /// Emergency: Clear all cached audio (use if cache is corrupted)
+  /// This will force fresh generation of all TTS audio
+  Future<void> clearAudioCache() async {
+    _logger.w('Clearing all TTS audio cache...');
+    await MeditationCache.clearAllCache();
+    _logger.i('Cache cleared successfully');
+  }
+  
   Future<void> dispose() async {
+    _logger.i('Disposing ImprovedMeditationController');
+    
+    // Cancel timers first
     _stressMonitorTimer?.cancel();
     _sessionTimer?.cancel();
+    
+    // Stop session (stops audio, but doesn't cancel subscriptions)
     await stopSession();
-    await voiceService.dispose();
+    
+    // NOW cancel subscriptions (only on full dispose)
+    _hrSubscription?.cancel();
+    _hrvSubscription?.cancel();
+    _logger.i('Biosignal subscriptions cancelled');
+    
+    // Dispose internally created resources
     await backgroundMusicPlayer.dispose();
-    llmService.dispose();
+
+    
+    _logger.i('ImprovedMeditationController disposed');
   }
 }
 

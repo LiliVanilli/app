@@ -24,6 +24,7 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
   String _voiceGender = 'female';
   String _meditationStyle = 'calm and empathetic';
   String _environment = 'peaceful nature';
+  bool _usePremiumVoice = false; // Premium voice toggle
   
   @override
   void initState() {
@@ -39,6 +40,7 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
     _voiceGender = account?.voiceGender ?? 'female';
     _meditationStyle = account?.meditationStyle ?? 'calm and empathetic';
     _environment = account?.preferredEnvironment ?? 'peaceful nature';
+    _usePremiumVoice = account?.usePremiumVoice ?? false;
   }
   
   @override
@@ -95,6 +97,7 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
       voiceGender: _voiceGender,
       meditationStyle: _meditationStyle,
       preferredEnvironment: _environment,
+      usePremiumVoice: _usePremiumVoice,
     );
     
     await account.save();
@@ -489,6 +492,63 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
                   ],
                   onChanged: (value) => setState(() => _environment = value!),
                 ),
+                
+                const SizedBox(height: 32),
+                const Divider(),
+                const SizedBox(height: 16),
+                
+                // Premium Voice Toggle
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Text(
+                                '🎤 Premium Voice',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              SizedBox(width: 8),
+                              Icon(Icons.auto_awesome, size: 18, color: Colors.amber),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'High-quality Google Cloud TTS voice\n(Standard rates apply)',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: _usePremiumVoice,
+                      onChanged: (value) {
+                        setState(() => _usePremiumVoice = value);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              value 
+                                ? '✨ Premium voice enabled!'
+                                : '✅ Free voice selected',
+                            ),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      activeColor: Colors.amber,
+                    ),
+                  ],
+                ),
+                
+
               ],
             ),
           ),

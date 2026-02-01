@@ -8,7 +8,6 @@ import '../model/earable_hr_sensor.dart';
 import '../model/hr_sensor_interface.dart';
 import '../model/activity_detector.dart';
 import '../widgets/hr_hrv_display_new.dart';
-import '../widgets/hr_hrv_chart.dart';
 import '../widgets/llm_meditation_widget.dart';
 import '../model/user_account.dart';
 import '../widgets/user_onboarding_screen.dart';
@@ -18,12 +17,14 @@ class MeditationView extends StatefulWidget {
   final Sensor? ppgSensor;
   final SensorConfigurationProvider? sensorConfigProvider;
   final SensorManager sensorManager;
+  final Wearable? wearable; // Added connection monitoring
   
   const MeditationView({
     super.key,
     this.ppgSensor,
     this.sensorConfigProvider,
     required this.sensorManager,
+    this.wearable,
   });
   
   @override
@@ -33,8 +34,7 @@ class MeditationView extends StatefulWidget {
 class _MeditationViewState extends State<MeditationView> {
   HrSensorInterface? _sensor;
   bool _useMockSensor = true;
-  final StressDetector _stressDetector = StressDetector();
-  final GlobalKey<LlmMeditationWidgetState> _meditationWidgetKey = GlobalKey<LlmMeditationWidgetState>();
+  Key? _meditationWidgetKey = UniqueKey(); // Generate new key when sensor changes to force rebuild
   
   double _currentHr = 75.0;
   double _currentHrv = -1.0; // -1 means no data yet (RMSSD)
@@ -46,6 +46,9 @@ class _MeditationViewState extends State<MeditationView> {
   
   StreamSubscription<double>? _hrSubscription;
   StreamSubscription<Map<String, double>>? _hrvSubscription;
+  StreamSubscription<bool>? _connectionSubscription; // Monitor connection state
+  
+  String _stressLevel = 'normal'; // Track stress level: 'relaxed', 'normal', or 'stressed'
   
   @override
   void initState() {
@@ -53,16 +56,86 @@ class _MeditationViewState extends State<MeditationView> {
     _initializeSensor();
   }
   
-  void _initializeSensor() {
+  Future<void> _initializeSensor() async {
+    // Don't reinitialize if sensor is already set
+    // (e.g., after switching to earable sensor)
+    if (_sensor != null) {
+      print('Sensor already initialized ($_sensor.runtimeType), skipping initialization');
+      return;
+    }
+    
     // Always start with mock sensor
     // User can manually switch to earable by pressing "Use Earable" button
     print('Starting with mock sensor');
     _sensor = MockHrSensor();
     _useMockSensor = true;
+    
+    // Ensure sensor is started before monitoring begins
+    print('>>> Starting mock sensor...');
+    await _sensor!.start();
+    print('✓ Mock sensor started');
+    
     _startMonitoring();
   }
   
-  void _switchToEarableSensor() {
+  /// Configure PPG sensor for streaming
+  /// This is called on initial connection and when earable reconnects
+  Future<void> _configurePpgSensor() async {
+    if (widget.ppgSensor == null || widget.sensorConfigProvider == null) {
+      print('Cannot configure PPG sensor - sensor or config provider is null');
+      return;
+    }
+    
+    print('Configuring PPG sensor...');
+    final sensor = widget.ppgSensor!;
+    final configProvider = widget.sensorConfigProvider!;
+    
+    try {
+      SensorConfiguration configuration = sensor.relatedConfigurations.first;
+
+      // Stream-Option aktivieren
+      if (configuration is ConfigurableSensorConfiguration &&
+          configuration.availableOptions.contains(StreamSensorConfigOption())) {
+        configProvider.addSensorConfigurationOption(configuration, StreamSensorConfigOption());
+        print('Added stream configuration option');
+      }
+
+      // Konfiguration setzen - WICHTIG: Nur "stream" Modi, NICHT "off"!
+      List<SensorConfigurationValue> values = configProvider.getSensorConfigurationValues(configuration, distinct: true);
+      
+      // Filter for streaming configurations (exclude "off" modes)
+      final streamingValues = values.where((v) {
+        final str = v.toString().toLowerCase();
+        return str.contains('stream') && !str.contains('off');
+      }).toList();
+      
+      if (streamingValues.isEmpty) {
+        print('No streaming PPG configuration found! Available: $values');
+        // Fallback to first value if no streaming config found
+        configProvider.addSensorConfiguration(configuration, values.first);
+      } else {
+        print('Found ${streamingValues.length} streaming PPG configs: $streamingValues');
+        // Use the first streaming configuration
+        configProvider.addSensorConfiguration(configuration, streamingValues.first);
+      }
+      
+      SensorConfigurationValue selectedValue = configProvider.getSelectedConfigurationValue(configuration)!;
+      
+      // KRITISCH: Sensor konfigurieren!
+      configuration.setConfiguration(selectedValue);
+      print('Set sensor configuration: $selectedValue');
+      
+      // Sensor initialization is asynchronous, wait for stream to be ready
+      // The configuration is applied asynchronously, so we need to wait
+      print('Waiting 500ms for PPG sensor to start streaming...');
+      await Future.delayed(Duration(milliseconds: 500));
+      print('PPG sensor configured and should be streaming now');
+    } catch (e) {
+      print('ERROR configuring PPG sensor: $e');
+    }
+  }
+  
+  Future<void> _switchToEarableSensor() async {
     if (widget.ppgSensor == null) {
       _showErrorDialog('No earable device connected. Please connect an OpenEarable device first.');
       return;
@@ -73,31 +146,11 @@ class _MeditationViewState extends State<MeditationView> {
     // Stop current sensor
     _hrSubscription?.cancel();
     _hrvSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _sensor?.dispose();
     
-    // WICHTIG: Sensor-Konfiguration setzen, wie die Heart Tracker App es macht!
-    final sensor = widget.ppgSensor!;
-    final configProvider = widget.sensorConfigProvider;
-    
-    if (configProvider != null) {
-      SensorConfiguration configuration = sensor.relatedConfigurations.first;
-
-      // Stream-Option aktivieren
-      if (configuration is ConfigurableSensorConfiguration &&
-          configuration.availableOptions.contains(StreamSensorConfigOption())) {
-        configProvider.addSensorConfigurationOption(configuration, StreamSensorConfigOption());
-        print('Added stream configuration option');
-      }
-
-      // Konfiguration setzen
-      List<SensorConfigurationValue> values = configProvider.getSensorConfigurationValues(configuration, distinct: true);
-      configProvider.addSensorConfiguration(configuration, values.first);
-      SensorConfigurationValue selectedValue = configProvider.getSelectedConfigurationValue(configuration)!;
-      
-      // KRITISCH: Sensor konfigurieren!
-      configuration.setConfiguration(selectedValue);
-      print('Set sensor configuration: $selectedValue');
-    }
+    // Configure PPG sensor
+    await _configurePpgSensor();
     
     // Get sample frequency from sensor configuration
     double sampleFreq = 84.0; // Default to 84 Hz for PPG
@@ -113,20 +166,55 @@ class _MeditationViewState extends State<MeditationView> {
     }
     
     // Create real sensor
-    _sensor = EarableHrSensor(
-      ppgSensor: widget.ppgSensor!,
-      sensorManager: widget.sensorManager,
-      sampleFreq: sampleFreq,
-    );
+    if (widget.wearable == null) {
+      _showErrorDialog('Internal Error: Wearable instance not found.');
+      return;
+    }
+
+    print('=== CREATING EARABLE SENSOR ===');
+    print('PPG Sensor: ${widget.ppgSensor}');
+    print('Wearable: ${widget.wearable}');
+    print('Sample Freq: $sampleFreq Hz');
+    print('Config Provider: ${widget.sensorConfigProvider}');
     
-    setState(() {
-      _useMockSensor = false;
-    });
-    
-    // Restart monitoring with real sensor
-    _startMonitoring();
-    
-    print('Switched to earable sensor! _useMockSensor = $_useMockSensor');
+    try {
+      _sensor = EarableHrSensor(
+        ppgSensor: widget.ppgSensor!,
+        wearable: widget.wearable!,
+        sensorManager: widget.sensorManager,
+        sampleFreq: sampleFreq,
+        configProvider: widget.sensorConfigProvider,
+      );
+      
+      print('✓ EarableHrSensor created successfully!');
+      
+      setState(() {
+        _useMockSensor = false;
+        _meditationWidgetKey = UniqueKey(); // Force widget rebuild with new sensor
+      });
+      
+      print('✓ State updated: _useMockSensor = $_useMockSensor');
+      print('✓ New widget key created - LlmMeditationWidget will rebuild');
+      
+      // Start sensor before attaching listeners
+      print('=== STARTING EARABLE SENSOR ===');
+      await _sensor!.start();
+      print('✓ Earable sensor started');
+      
+      // Restart monitoring with real sensor
+      // (initState won't reinitialize since _sensor is now set)
+      print('=== CALLING _startMonitoring() ===');
+      _startMonitoring();
+      print('✓ _startMonitoring() completed');
+      
+      print('Switched to earable sensor! _useMockSensor = $_useMockSensor');
+      
+    } catch (e, stackTrace) {
+      print('❌ ERROR creating or starting EarableHrSensor: $e');
+      print('Stack trace: $stackTrace');
+      _showErrorDialog('Failed to start earable sensor: $e');
+      return;
+    }
     
     // Show success message only if widget is still mounted
     if (mounted) {
@@ -164,35 +252,22 @@ class _MeditationViewState extends State<MeditationView> {
     );
   }
   
-  void _openLiveChart() {
-    if (_sensor == null) return;
-    
-    // Get history from sensor if it's an EarableHrSensor
-    List<double> hrHistory = [];
-    List<double> hrvHistory = [];
-    if (_sensor is EarableHrSensor) {
-      hrHistory = (_sensor as EarableHrSensor).hrHistory;
-      hrvHistory = (_sensor as EarableHrSensor).hrvHistory;
+  Future<void> _startMonitoring() async {
+    print('>>> _startMonitoring() called, _sensor = $_sensor');
+    if (_sensor == null) {
+      print('❌ _sensor is null! Cannot start monitoring.');
+      return;
     }
     
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => HrHrvChart(
-          hrStream: _sensor!.hrStream,
-          hrvStream: _sensor!.hrvStream,
-          initialHrData: hrHistory,
-          initialHrvData: hrvHistory,
-          measurementDurationSeconds: _measurementDurationSeconds,
-        ),
-      ),
-    );
-  }
-  
-  void _startMonitoring() {
-    if (_sensor == null) return;
-    
-    _sensor!.start();
+    print('>>> Calling _sensor.start()...');
+    try {
+      await _sensor!.start();
+      print('✓ _sensor.start() completed successfully');
+    } catch (e, stackTrace) {
+      print('❌ ERROR in _sensor.start(): $e');
+      print('Stack trace: $stackTrace');
+      return;
+    }
     
     // Reset stability tracking when starting new sensor
     setState(() {
@@ -225,16 +300,78 @@ class _MeditationViewState extends State<MeditationView> {
         // (which means ~30+ RR intervals collected)
         if (!_hrvIsStable && _hrvMeasurementCount >= 3 && !_useMockSensor) {
           _hrvIsStable = true;
-          print('HRV measurements now stable ($_hrvMeasurementCount measurements)');
+          print('✅ HRV measurements now stable ($_hrvMeasurementCount measurements received)');
+          print('   RMSSD: ${_currentHrv.toStringAsFixed(1)} ms, SDNN: ${_currentSdnn >= 0 ? _currentSdnn.toStringAsFixed(1) : "pending"} ms');
+        }
+        
+        // Log HRV updates for debugging
+        if (_hrvMeasurementCount % 5 == 0) {
+          print('📊 HRV Update #$_hrvMeasurementCount: RMSSD=${_currentHrv.toStringAsFixed(1)}ms, SDNN=${_currentSdnn >= 0 ? _currentSdnn.toStringAsFixed(1) : "pending"}ms, stable=$_hrvIsStable');
         }
       });
+    });
+    
+    // Monitor connection state
+    _connectionSubscription?.cancel();
+    _connectionSubscription = _sensor!.isConnected.listen((isConnected) {
+      if (!isConnected && mounted) {
+        // Reset values to indicate "No Signal"
+        setState(() {
+          _currentHr = 0.0;
+          _currentHrv = -1.0;
+          _currentSdnn = -1.0;
+          // _activityLevel cannot be set here as it's pulled from sensor directly
+        });
+        
+        // Show persistent warning if disconnected
+         ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.bluetooth_disabled, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(child: Text('Earable Disconnected! Reconnecting...')),
+              ],
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(days: 1), // Persistent until dismissed or reconnected
+            action: SnackBarAction(
+              label: 'RETRY',
+              textColor: Colors.white,
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                _sensor?.start();
+                _startMonitoring();
+              },
+            ),
+          ),
+        );
+      } else if (isConnected && mounted) {
+        // Hide warning when reconnected
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      }
     });
   }
   
 
   
-  void _simulateStress() {
+  void _simulateStress() async {
     if (_sensor is MockHrSensor) {
+      // First reset to baseline to ensure stress values change significantly
+      (_sensor as MockHrSensor).reset();
+      print('Resetting to baseline first...');
+      _showSuccessSnackbar('Resetting to baseline...');
+      
+      // Reset stress level display immediately
+      setState(() {
+        _stressLevel = 'normal';
+      });
+      
+      // Wait for values to normalize - 3 seconds should be enough
+      // Mock sensor moves at 95% per second, so after 3s it's very close to target
+      await Future.delayed(const Duration(seconds: 3));
+      
+      // Now simulate stress
       (_sensor as MockHrSensor).simulateStress();
       print('Simulating stress: HR -> 100 BPM, HRV -> 12 ms (triggers stress detection!)');
       _showSuccessSnackbar('Simulating stress: HR↑100, HRV↓12ms');
@@ -246,18 +383,32 @@ class _MeditationViewState extends State<MeditationView> {
       (_sensor as MockHrSensor).simulateRelaxation();
       print('Simulating relaxation: HR -> 65 BPM, HRV -> 150 ms');
       _showSuccessSnackbar('Simulating relaxation...');
+      
+      // Update stress level display immediately
+      setState(() {
+        _stressLevel = 'relaxed';
+      });
     }
   }
   
   Future<void> _resetToBaseline() async {
     print('Resetting to baseline...');
     
-    // Reset meditation widget state (clears timers)
-    _meditationWidgetKey.currentState?.resetMeditation();
+    // Update stress level display immediately
+    setState(() {
+      _stressLevel = 'normal';
+      // Reset key to force full widget rebuild and clear state (schedule/detection flags)
+      _meditationWidgetKey = UniqueKey();
+    });
+    
+    // Ensure services are stopped cleanly
+    // Note: State is lost due to UniqueKey rebuild
+    // await _meditationWidgetKey.currentState?.resetMeditation();
     
     // Stop current sensor
     _hrSubscription?.cancel();
     _hrvSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _sensor?.dispose();
     
     // Reset to mock sensor
@@ -266,6 +417,11 @@ class _MeditationViewState extends State<MeditationView> {
     setState(() {
       _useMockSensor = true;
     });
+    
+    // Start mock sensor before monitoring
+    print('>>> Starting mock sensor (reset)...');
+    await _sensor!.start();
+    print('✓ Mock sensor started (reset)');
     
     // Restart monitoring with mock sensor
     _startMonitoring();
@@ -281,100 +437,27 @@ class _MeditationViewState extends State<MeditationView> {
   }
   
   String _getActivityDescription(ActivityLevel level) {
+    // Basic description
+    String desc;
     switch (level) {
       case ActivityLevel.resting:
-        return '🧘 Resting (sitting/standing)';
+        desc = 'Resting';
+        break;
       case ActivityLevel.light:
-        return '🚶 Light movement (slow walking)';
+        desc = 'Light movement';
+        break;
       case ActivityLevel.moderate:
-        return '🏃 Moderate activity (brisk walking)';
+        desc = 'Moderate activity';
+        break;
       case ActivityLevel.vigorous:
-        return '💪 Vigorous exercise (running)';
+        desc = 'Vigorous exercise';
+        break;
       case ActivityLevel.intense:
-        return '⚡ Intense exercise (sprinting)';
-    }
-  }
-  
-  Widget _buildDebugInfo() {
-    String activityLevel = 'unknown';
-    String activityDescription = 'Sensor does not support activity detection';
-    
-    if (_sensor is EarableHrSensor) {
-      final earableSensor = _sensor as EarableHrSensor;
-      activityLevel = earableSensor.activityLevel.name;
-      
-      switch (earableSensor.activityLevel) {
-        case ActivityLevel.resting:
-          activityDescription = 'Still (sitting/standing)';
-          break;
-        case ActivityLevel.light:
-          activityDescription = 'Light movement (slow walking)';
-          break;
-        case ActivityLevel.moderate:
-          activityDescription = 'Moderate activity (brisk walking)';
-          break;
-        case ActivityLevel.vigorous:
-          activityDescription = 'Vigorous exercise (running)';
-          break;
-        case ActivityLevel.intense:
-          activityDescription = 'Intense exercise (sprinting)';
-          break;
-      }
+        desc = 'Intense exercise';
+        break;
     }
     
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.directions_run, size: 16, color: Colors.blueGrey[700]),
-            SizedBox(width: 4),
-            Text('Activity: ', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('$activityLevel'),
-          ],
-        ),
-        Text('  $activityDescription', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-        SizedBox(height: 8),
-        Row(
-          children: [
-            Icon(Icons.favorite, size: 16, color: Colors.red[300]),
-            SizedBox(width: 4),
-            Text('HR: ', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('${_currentHr.toStringAsFixed(1)} BPM'),
-          ],
-        ),
-        SizedBox(height: 4),
-        Row(
-          children: [
-            Icon(Icons.show_chart, size: 16, color: Colors.blue[300]),
-            SizedBox(width: 4),
-            Text('HRV (RMSSD): ', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text(_currentHrv > 0 ? '${_currentHrv.toStringAsFixed(1)} ms' : 'measuring...'),
-          ],
-        ),
-        if (_currentSdnn > 0) ...[
-          SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(Icons.timeline, size: 16, color: Colors.green[300]),
-              SizedBox(width: 4),
-              Text('HRV (SDNN): ', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text('${_currentSdnn.toStringAsFixed(1)} ms'),
-            ],
-          ),
-        ],
-        SizedBox(height: 8),
-        Text('Measurement: ${_measurementDurationSeconds}s', 
-             style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-        if (_currentHrv > 0 && _currentHr > 40) ...[
-          SizedBox(height: 4),
-          Text('HRV is ${_hrvIsStable ? "STABLE" : "COLLECTING"} ($_hrvMeasurementCount readings)',
-               style: TextStyle(fontSize: 12, 
-                              color: _hrvIsStable ? Colors.green[700] : Colors.orange[700],
-                              fontWeight: FontWeight.bold)),
-        ],
-      ],
-    );
+    return desc;
   }
   
   Future<void> _openProfileSettings() async {
@@ -392,7 +475,8 @@ class _MeditationViewState extends State<MeditationView> {
       
       // If account was updated, update the meditation widget directly
       if (updatedAccount != null && mounted) {
-        await _meditationWidgetKey.currentState?.updateSettings(updatedAccount);
+        // Note: Can't access currentState anymore since we use UniqueKey
+        // await _meditationWidgetKey.currentState?.updateSettings(updatedAccount);
         _showSuccessSnackbar('Settings saved! Voice and preferences updated.');
       }
     }
@@ -441,7 +525,7 @@ class _MeditationViewState extends State<MeditationView> {
                             hr: _currentHr,
                             hrv: _currentHrv,
                             sdnn: _currentSdnn,
-                            stressLevel: _currentHrv > 0 ? _stressDetector.getStressCategory(_currentHr, _currentHrv) : 'normal',
+                            stressLevel: _stressLevel,
                             isHrvStable: _hrvIsStable,
                             measurementDurationSeconds: _measurementDurationSeconds,
                             activityLevel: _sensor is EarableHrSensor ? (_sensor as EarableHrSensor).activityLevel.name : null,
@@ -455,31 +539,55 @@ class _MeditationViewState extends State<MeditationView> {
                               key: _meditationWidgetKey,
                               sensor: _sensor!,
                               onReset: _resetToBaseline,
+                              onStressLevelChanged: (level) {
+                                if (mounted) {
+                                  setState(() {
+                                    _stressLevel = level;
+                                  });
+                                }
+                              },
                             ),
                           
                           const SizedBox(height: 16),
                           
                           // Development/Testing Controls (always visible for testing)
-                          Row(
+                          Column(
                             children: [
-                              Expanded(
+                              SizedBox(
+                                width: double.infinity,
                                 child: ElevatedButton(
-                                  onPressed: (widget.ppgSensor != null && _useMockSensor) 
-                                      ? _switchToEarableSensor 
-                                      : null,
+                                  onPressed: () {
+                                    print('🔘 USE EARABLE BUTTON PRESSED');
+                                    print('   ppgSensor: ${widget.ppgSensor != null ? "available" : "NULL"}');
+                                    print('   _useMockSensor: $_useMockSensor');
+                                    print('   wearable: ${widget.wearable != null ? "available" : "NULL"}');
+                                    
+                                    if (widget.ppgSensor == null) {
+                                      print('   ❌ Cannot switch: ppgSensor is NULL');
+                                      _showErrorDialog('PPG Sensor not available. Please ensure earable is connected.');
+                                      return;
+                                    }
+                                    
+                                    if (!_useMockSensor) {
+                                      print('   ⚠️ Already using earable sensor');
+                                      return;
+                                    }
+                                    
+                                    print('   ✅ Calling _switchToEarableSensor()');
+                                    _switchToEarableSensor();
+                                  },
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _useMockSensor ? Colors.blue[100] : Colors.green[100],
                                     foregroundColor: _useMockSensor ? Colors.blue[900] : Colors.green[900],
                                     padding: const EdgeInsets.symmetric(vertical: 12),
                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                    disabledBackgroundColor: _useMockSensor ? Colors.grey[300] : Colors.green[100],
-                                    disabledForegroundColor: _useMockSensor ? Colors.grey[600] : Colors.green[900],
                                   ),
-                                  child: Text(_useMockSensor ? 'Use Earable' : '✓ Using Earable'),
+                                  child: Text(_useMockSensor ? 'Use Earable' : '✓ Earable Active'),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Expanded(
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
                                 child: ElevatedButton(
                                   onPressed: _useMockSensor && _sensor is MockHrSensor 
                                       ? _simulateStress
@@ -548,6 +656,7 @@ class _MeditationViewState extends State<MeditationView> {
     _measurementTimer?.cancel();
     _hrSubscription?.cancel();
     _hrvSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _sensor?.dispose();
     // _audioPlayer.dispose(); // Removed
     super.dispose();

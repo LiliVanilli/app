@@ -35,8 +35,11 @@ class MockHrSensor implements HrSensorInterface {
   /// Stream of HRV metrics (SDNN, RMSSD, pNN50)
   Stream<Map<String, double>> get hrvStream => _hrvController.stream;
   
+  /// Stream of connection state (always connected for mock)
+  Stream<bool> get isConnected => Stream.value(true).asBroadcastStream();
+  
   /// Start generating mock data
-  void start() {
+  Future<void> start() async {
     if (_isActive) return;
     _isActive = true;
     

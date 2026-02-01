@@ -42,11 +42,12 @@ List<AppInfo> _apps = [
             // No PPG sensor found, will use mock sensor
           }
         }
-        return MeditationView(
-          ppgSensor: ppgSensor,
-          sensorConfigProvider: sensorConfigProvider,
-          sensorManager: wearable as SensorManager,
-        );
+          return MeditationView(
+            ppgSensor: ppgSensor,
+            sensorConfigProvider: sensorConfigProvider,
+            sensorManager: wearable as SensorManager,
+            wearable: wearable, // Passes Wearable directly
+          );
       },
     ),
   ),

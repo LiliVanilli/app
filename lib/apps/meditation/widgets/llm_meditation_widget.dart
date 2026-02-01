@@ -2,23 +2,28 @@ import 'package:flutter/material.dart';
 import '../model/improved_meditation_controller.dart';
 import '../model/improved_meditation_llm_service.dart';
 import '../model/meditation_voice_service.dart';
+import '../model/meditation_config.dart';
 import '../model/user_account.dart';
 import '../model/user_meditation_profile.dart';
 import '../model/hr_sensor_interface.dart';
 import '../model/mood_entry.dart';
+import '../model/meditation_cache.dart';
 import '../widgets/user_onboarding_screen.dart';
 import '../widgets/weekly_analysis_screen.dart';
+import '../widgets/api_debug_widget.dart';
 import 'breathing_animation.dart';
 
 /// Improved meditation widget with natural voice and personalization
 class LlmMeditationWidget extends StatefulWidget {
   final HrSensorInterface sensor;
   final VoidCallback? onReset;
+  final void Function(String stressLevel)? onStressLevelChanged;
   
   const LlmMeditationWidget({
     super.key,
     required this.sensor,
     this.onReset,
+    this.onStressLevelChanged,
   });
   
   @override
@@ -33,6 +38,9 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
   double _currentHrv = 0.0;
   bool _stressDetected = false;
   double _baselineHr = 0.0;
+  
+  /// Public getter for controller (used by meditation_view)
+  ImprovedMeditationController? get controller => _controller;
   double _baselineHrv = 0.0;
   UserAccount? _userAccount;
   bool _isInitializing = true;
@@ -41,6 +49,10 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
   int _currentSegment = 0;
   int _totalSegments = 10;
   Duration _sessionElapsed = Duration.zero;
+  
+  // Services owned by this widget
+  MeditationVoiceService? _voiceService;
+  ImprovedMeditationLLMService? _llmService;
   
   @override
   void initState() {
@@ -61,25 +73,18 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
   }
   
   Future<void> _initialize() async {
-    // Load user meditation profile (has the settings from dialog)
-    final profile = await UserMeditationProfile.load();
-    print('🔍 LOADED PROFILE: name="${profile.userName}", voice=${profile.voiceGender}, style=${profile.meditationStyle}');
+    print('🔄 LlmMeditationWidget._initialize() called with sensor: ${widget.sensor.runtimeType}');
     
-    // Load or create user account
+    // NOTE: Cache auto-clear disabled now that regex bug is fixed
+    // Cache will self-heal (deletes corrupted files < 1KB automatically)
+    // Cache expires after 7 days
+    // If issues recur, uncomment the lines below:
+    // print('🗑️ Clearing TTS cache on startup...');
+    // await MeditationCache.clearAllCache();
+    
+    // Load user account (primary source of truth)
     final account = await UserAccount.load();
-    
-    // Sync profile settings into account
-    account.name = profile.userName;
-    account.voiceGender = profile.voiceGender;
-    account.meditationStyle = profile.meditationStyle;
-    account.preferredEnvironment = profile.preferredEnvironment;
-    account.favoriteActivity = profile.favoriteActivity;
-    account.stressTriggers = profile.stressTriggers;
-    account.relaxationTechniques = profile.relaxationTechniques;
-    
-    // Save synced account
-    await account.save();
-    print('🔄 SYNCED ACCOUNT: name="${account.name}", voice=${account.voiceGender}, style=${account.meditationStyle}');
+    print('🔍 LOADED ACCOUNT: name="${account.name}", voice=${account.voiceGender}, style=${account.meditationStyle}');
     
     if (!account.isSetup && mounted) {
       // Show onboarding
@@ -101,25 +106,30 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
     } else {
       setState(() {
         _userAccount = account;
+        _currentSegment = 0; // Reset segment UI
+        _sessionElapsed = Duration.zero; // Reset timer UI
+        _stressDetected = false; // Reset stress flag
       });
     }
     
     // Initialize services
-    final voiceService = MeditationVoiceService();
-    await voiceService.initialize(
+    _voiceService = MeditationVoiceService();
+    await _voiceService!.initialize(
       voiceGender: _userAccount!.voiceGender,
       meditationStyle: _userAccount!.meditationStyle,
+      usePremiumVoice: _userAccount!.usePremiumVoice,
     );
-    print('✅ Voice service initialized: gender=${_userAccount!.voiceGender.toUpperCase()}, style=${_userAccount!.meditationStyle}');
+    print('✅ Voice service initialized: gender=${_userAccount!.voiceGender.toUpperCase()}, style=${_userAccount!.meditationStyle}, premium=${_userAccount!.usePremiumVoice}');
     
-    final llmService = ImprovedMeditationLLMService();
-    llmService.setUserAccount(_userAccount!);
+    _llmService = ImprovedMeditationLLMService();
+    _llmService!.setUserAccount(_userAccount!);
     
     // Create controller
+    print('🎯 Creating ImprovedMeditationController with sensor: ${widget.sensor.runtimeType}');
     _controller = ImprovedMeditationController(
       sensor: widget.sensor,
-      llmService: llmService,
-      voiceService: voiceService,
+      llmService: _llmService!,
+      voiceService: _voiceService!,
       userAccount: _userAccount!,
       onStateChanged: (state) {
         if (mounted && _currentState != state) {
@@ -199,6 +209,8 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
           setState(() {
             _stressDetected = true;
           });
+          // Notify parent of stress level change
+          widget.onStressLevelChanged?.call('stressed');
           print('✓ Set _stressDetected=true');
           // Only show prompt if not in cooldown AND not before scheduled time
           if (!inCooldown && !beforeScheduledTime) {
@@ -215,11 +227,15 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
           }
           
           if (!isStressed && _stressDetected) {
-            print('Stress cleared - resetting _stressDetected and _scheduledMeditationTime');
+            print('Stress cleared - resetting _stressDetected only (keeping schedule)');
             setState(() {
               _stressDetected = false;
-              _scheduledMeditationTime = null; // Clear scheduled time when stress goes away
+              // DON'T clear _scheduledMeditationTime here!
+              // If user said "Later (30 min)", that schedule should persist
+              // even if stress goes away temporarily
             });
+            // Notify parent that stress cleared
+            widget.onStressLevelChanged?.call('normal');
           }
         }
       },
@@ -237,16 +253,137 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
   @override
   void dispose() {
     _controller?.dispose();
+    _voiceService?.dispose();
+    _llmService?.dispose();
     super.dispose();
   }
   
-  void resetMeditation() {
+  Future<void> resetMeditation() async {
+    print('🔄 RESET MEDITATION: Stopping current session and reinitializing...');
+    
+    // CRITICAL: Stop and dispose current controller/services
+    if (_controller != null) {
+      await _controller!.stopSession(); // This stops voice and audio
+      await _controller!.dispose(); // Dispose controller and all services
+      _controller = null;
+    }
+    
     // Reset all timers and states
     setState(() {
       _stressDetected = false;
       _lastMeditationCompletionTime = null;
       _scheduledMeditationTime = null;
+      _currentState = MeditationState.idle;
+      _statusMessage = 'Monitoring your vitals...';
     });
+    
+    // Dispose old services (controller doesn't do it anymore)
+    await _voiceService?.dispose();
+    _llmService?.dispose();
+    
+    // Recreate controller with current user settings
+    // This ensures premium voice and other settings are preserved
+    if (_userAccount != null) {
+      print('🔄 Recreating controller with premium voice: ${_userAccount!.usePremiumVoice}');
+      
+      _voiceService = MeditationVoiceService();
+      await _voiceService!.initialize(
+        voiceGender: _userAccount!.voiceGender,
+        meditationStyle: _userAccount!.meditationStyle,
+        usePremiumVoice: _userAccount!.usePremiumVoice,
+      );
+      print('✅ Voice service reinitialized after reset: premium=${_userAccount!.usePremiumVoice}');
+      
+      _llmService = ImprovedMeditationLLMService();
+      _llmService!.setUserAccount(_userAccount!);
+      
+      // Create fresh controller
+      _controller = ImprovedMeditationController(
+        sensor: widget.sensor,
+        llmService: _llmService!,
+        voiceService: _voiceService!,
+        userAccount: _userAccount!,
+        onStateChanged: (state) {
+          if (mounted && _currentState != state) {
+            setState(() {
+              _currentState = state;
+            });
+          }
+        },
+        onStatusMessage: (message) {
+          if (mounted && _statusMessage != message) {
+            setState(() {
+              _statusMessage = message;
+            });
+          }
+        },
+        onBiosignalUpdate: (hr, hrv) {
+          if (mounted) {
+            final hrDiff = (hr - _currentHr).abs();
+            final hrvDiff = (hrv - _currentHrv).abs();
+            if (hrDiff > 5.0 || hrvDiff > 10.0) {
+              setState(() {
+                _currentHr = hr;
+                _currentHrv = hrv;
+              });
+            }
+          }
+        },
+        onSessionComplete: () {
+          final biosignals = _controller!.getCurrentBiosignals();
+          _baselineHr = biosignals['baselineHr'] ?? 0.0;
+          _baselineHrv = biosignals['baselineHrv'] ?? 0.0;
+          _lastMeditationCompletionTime = DateTime.now();
+          _showCompletionDialogWithMoodCheck();
+        },
+        onSegmentUpdate: (current, total) {
+          if (mounted) {
+            setState(() {
+              _currentSegment = current;
+              _totalSegments = total;
+            });
+          }
+        },
+        onTimerUpdate: (elapsed) {
+          if (mounted) {
+            setState(() {
+              _sessionElapsed = elapsed;
+            });
+          }
+        },
+        onStressDetected: (isStressed) {
+          final now = DateTime.now();
+          final beforeScheduledTime = _scheduledMeditationTime != null &&
+              now.isBefore(_scheduledMeditationTime!);
+          
+          if (beforeScheduledTime) {
+            return;
+          }
+          
+          final inCooldown = _lastMeditationCompletionTime != null &&
+              now.difference(_lastMeditationCompletionTime!).inMinutes < 2;
+          
+          if (inCooldown) {
+            return;
+          }
+          
+          if (isStressed && !_stressDetected && _currentState == MeditationState.idle) {
+            setState(() {
+              _stressDetected = true;
+            });
+          }
+          
+          if (!isStressed && _stressDetected) {
+            setState(() {
+              _stressDetected = false;
+              // DON'T clear _scheduledMeditationTime - keep the schedule!
+            });
+          }
+        },
+      );
+      
+      print('✅ Controller recreated successfully after reset');
+    }
     
     // Don't call widget.onReset here - it's called by the parent already
     // This prevents infinite loop when parent calls resetMeditation()
@@ -269,22 +406,27 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
       _isInitializing = true;
     });
     
+    // Dispose old services
+    await _voiceService?.dispose();
+    _llmService?.dispose();
+    
     // Initialize new services with updated account
-    final voiceService = MeditationVoiceService();
-    await voiceService.initialize(
+    _voiceService = MeditationVoiceService();
+    await _voiceService!.initialize(
       voiceGender: _userAccount!.voiceGender,
       meditationStyle: _userAccount!.meditationStyle,
+      usePremiumVoice: _userAccount!.usePremiumVoice,
     );
-    print('✅ Voice service RE-initialized: gender=${_userAccount!.voiceGender.toUpperCase()}, style=${_userAccount!.meditationStyle}');
+    print('✅ Voice service RE-initialized: gender=${_userAccount!.voiceGender.toUpperCase()}, style=${_userAccount!.meditationStyle}, premium=${_userAccount!.usePremiumVoice}');
     
-    final llmService = ImprovedMeditationLLMService();
-    llmService.setUserAccount(_userAccount!);
+    _llmService = ImprovedMeditationLLMService();
+    _llmService!.setUserAccount(_userAccount!);
     
     // Create new controller with updated services
     _controller = ImprovedMeditationController(
       sensor: widget.sensor,
-      llmService: llmService,
-      voiceService: voiceService,
+      llmService: _llmService!,
+      voiceService: _voiceService!,
       userAccount: _userAccount!,
       onStateChanged: (state) {
         if (mounted && _currentState != state) {
@@ -363,10 +505,10 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
           }
           
           if (!isStressed && _stressDetected) {
-            print('Stress cleared - resetting _stressDetected and _scheduledMeditationTime');
+            print('Stress cleared - resetting _stressDetected only (keeping schedule)');
             setState(() {
               _stressDetected = false;
-              _scheduledMeditationTime = null;
+              // DON'T clear _scheduledMeditationTime - keep the schedule!
             });
           }
         }
@@ -676,7 +818,7 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
         children: [
           // Session info card with smooth transitions
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 150), // Reduced from 300ms for consistency
             child: (_currentState == MeditationState.speaking || 
                     _currentState == MeditationState.waitingForBiosignals ||
                     _currentState == MeditationState.paused ||
@@ -745,10 +887,12 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
           ),
           
           // Use AnimatedSwitcher to prevent flickering when state changes
+          // Keep breathing animation visible during content generation to prevent flicker
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 150), // Reduced from 300ms for snappier feel
             child: (_currentState == MeditationState.speaking || 
                     _currentState == MeditationState.waitingForBiosignals ||
+                    _currentState == MeditationState.generatingContent || // KEEP VISIBLE during generation!
                     _currentState == MeditationState.paused)
               ? Column(
                   key: const ValueKey('meditation_breathing'),
@@ -759,7 +903,10 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                       child: Padding(
                         padding: const EdgeInsets.all(24.0),
-                        child: BreathingAnimation(isActive: _currentState == MeditationState.speaking),
+                        child: BreathingAnimation(
+                          isActive: _currentState == MeditationState.speaking || 
+                                   _currentState == MeditationState.generatingContent, // Keep animating during generation
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -770,6 +917,7 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
           
           if (_currentState == MeditationState.speaking ||
               _currentState == MeditationState.waitingForBiosignals ||
+              _currentState == MeditationState.generatingContent || // KEEP BUTTONS VISIBLE during generation!
               _currentState == MeditationState.paused)
             Row(
               children: [
@@ -793,6 +941,42 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
                   ),
                 ),
               ],
+            ),
+          
+          // API Warning Banner (if APIs not configured)
+          if (_currentState == MeditationState.idle && !MeditationConfig.hasValidGeminiKey)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade100,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange, width: 2),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber, color: Colors.orange[800]),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'API Not Configured',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.orange[900],
+                          ),
+                        ),
+                        Text(
+                          'Using fallback mode. Tap "Check API Keys" to fix.',
+                          style: TextStyle(fontSize: 12, color: Colors.orange[800]),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           
           // Weekly Analysis Button (when idle or completed)
@@ -828,6 +1012,10 @@ class LlmMeditationWidgetState extends State<LlmMeditationWidget> {
   }
   
   void _startMeditation() {
+    // Clear any scheduled meditation time when user starts a meditation
+    setState(() {
+      _scheduledMeditationTime = null;
+    });
     _controller?.startSession();
   }
   

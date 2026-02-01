@@ -15,6 +15,7 @@ class UserAccount {
   String voiceGender; // 'male' or 'female'
   String meditationStyle; // Calm, energetic, etc.
   String preferredEnvironment; // Nature, ocean, etc.
+  bool usePremiumVoice; // Toggle for Google Cloud TTS ($$$)
   List<String> stressTriggers;
   List<String> relaxationTechniques;
   String favoriteActivity;
@@ -34,6 +35,7 @@ class UserAccount {
     this.voiceGender = 'female', // Fixed to female only
     this.meditationStyle = 'calm and empathetic',
     this.preferredEnvironment = 'peaceful nature',
+    this.usePremiumVoice = false, // Default to FREE voice
     this.stressTriggers = const [],
     this.relaxationTechniques = const ['deep breathing', 'progressive relaxation'],
     this.favoriteActivity = '',
@@ -150,6 +152,7 @@ class UserAccount {
     'voiceGender': voiceGender,
     'meditationStyle': meditationStyle,
     'preferredEnvironment': preferredEnvironment,
+    'usePremiumVoice': usePremiumVoice,
     'stressTriggers': stressTriggers,
     'relaxationTechniques': relaxationTechniques,
     'favoriteActivity': favoriteActivity,
@@ -170,6 +173,7 @@ class UserAccount {
       voiceGender: json['voiceGender'] ?? 'female',
       meditationStyle: json['meditationStyle'] ?? 'calm and empathetic',
       preferredEnvironment: json['preferredEnvironment'] ?? 'peaceful nature',
+      usePremiumVoice: json['usePremiumVoice'] ?? false, // Default to FREE
       stressTriggers: List<String>.from(json['stressTriggers'] ?? []),
       relaxationTechniques: List<String>.from(json['relaxationTechniques'] ?? ['deep breathing', 'progressive relaxation']),
       favoriteActivity: json['favoriteActivity'] ?? '',
@@ -183,9 +187,9 @@ class UserAccount {
     lastUpdated = DateTime.now();
     final prefs = await SharedPreferences.getInstance();
     final jsonData = toJson();
-    print('💾 SAVING ACCOUNT: voiceGender=${jsonData['voiceGender']}, meditationStyle=${jsonData['meditationStyle']}');
+    print('SAVING ACCOUNT: voiceGender=${jsonData['voiceGender']}, meditationStyle=${jsonData['meditationStyle']}');
     await prefs.setString('user_account', jsonEncode(jsonData));
-    print('✅ Account saved successfully');
+    print('Account saved successfully');
   }
   
   /// Load account from local storage

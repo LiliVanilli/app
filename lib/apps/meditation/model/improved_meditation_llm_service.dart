@@ -33,7 +33,7 @@ class ImprovedMeditationLLMService {
   void _initializeModel() {
     try {
       _model = GenerativeModel(
-        model: 'gemini-2.0-flash-exp',
+        model: 'gemini-2.5-flash', // Using newest Gemini model (2026)
         apiKey: MeditationConfig.geminiApiKey,
         systemInstruction: Content.system(_getSystemPrompt()),
         generationConfig: GenerationConfig(
@@ -41,7 +41,7 @@ class ImprovedMeditationLLMService {
           maxOutputTokens: 600,
         ),
       );
-      _logger.i('✓ Improved Meditation LLM initialized');
+      _logger.i('Improved Meditation LLM initialized (gemini-2.5-flash)');
     } catch (e) {
       _logger.e('Error initializing LLM: $e');
       rethrow;
@@ -138,7 +138,7 @@ Remember: You're creating a calming, safe space for someone who is stressed. Be 
   void startNewSession() {
     _chatSession = _model.startChat();
     _iterationCount = 0;
-    _logger.i('✓ New meditation session started');
+    _logger.i('New meditation session started');
   }
   
   /// Generate personalized welcome with actual biomarkers and user info
@@ -157,13 +157,15 @@ Remember: You're creating a calming, safe space for someone who is stressed. Be 
 User Info:
 ${_userAccount?.getLLMContext() ?? ''}
 
-Current Biosignals:
-- Heart rate: ${currentHr.toStringAsFixed(0)} BPM (baseline: ${baselineHr.toStringAsFixed(0)} BPM)
-- Heart rate variability: ${currentHrv.toStringAsFixed(0)} ms (baseline: ${baselineHrv.toStringAsFixed(0)} ms)
+Current State:
+- Status: ${currentHr > baselineHr + 10 ? 'Elevated/Stressed' : 'Calm/Stable'}
+- Goal: Deep relaxation and grounding
 
-The user is showing signs of stress. Acknowledge their current state warmly using these specific numbers. Reassure them that you'll guide them through a personalized meditation to help them find calm.
+The user is showing signs of stress. Acknowledge their current state warmly. Reassure them that you'll guide them through a personalized meditation to help them find calm.
 
-Use their name naturally if provided. Keep it under 100 words, warm and personal.''';
+CRITICAL INSTRUCTION: Do NOT mention specific heart rate numbers (e.g., don't say "85 BPM"). Just refer to "your racing heart" or "tension in your body" or "your calm state". Focus on FEELING, not metrics.
+
+Use their name naturally if provided. Keep it under 80 words, warm and personal.''';
 
       final response = await _model.generateContent([Content.text(prompt)]);
       return response.text ?? "${nameGreeting}I notice your heart rate is elevated. Let's work together to bring you back to a state of calm.";
@@ -184,16 +186,9 @@ Use their name naturally if provided. Keep it under 100 words, warm and personal
   }) async {
     _iterationCount++;
     
-    // Try to get from cache first
-    final cachedSegment = await MeditationCache.getCachedSegment(
-      stressLevel: stressLevel,
-      meditationStyle: _userAccount?.meditationStyle ?? 'calm and empathetic',
-    );
-    
-    if (cachedSegment != null) {
-      _logger.i('✓ Using cached segment #$_iterationCount (saves 1 API request)');
-      return cachedSegment;
-    }
+    // DISABLE CACHE for meditation segments to ensure unique content every time
+    // Each meditation should be fresh and personalized to current biomarkers
+    // Note: Voice caching is still active to save API costs for repeated phrases
     
     if (_chatSession == null) {
       startNewSession();
@@ -202,15 +197,11 @@ Use their name naturally if provided. Keep it under 100 words, warm and personal
     try {
       final prompt = _buildDetailedPrompt(
         iteration: _iterationCount,
-        currentHr: currentHr,
-        currentHrv: currentHrv,
-        baselineHr: baselineHr,
-        baselineHrv: baselineHrv,
         isStressed: isStressed,
         stressLevel: stressLevel,
       );
       
-      _logger.i('Generating segment #$_iterationCount (Stress: ${stressLevel.toStringAsFixed(1)}%) - API REQUEST');
+      _logger.i('Generating segment #$_iterationCount (Stress: ${stressLevel.toStringAsFixed(1)}%) - CALLING GEMINI API...');
       
       final response = await _chatSession!.sendMessage(Content.text(prompt));
       final text = response.text ?? '';
@@ -219,32 +210,28 @@ Use their name naturally if provided. Keep it under 100 words, warm and personal
         throw Exception('Empty LLM response');
       }
       
-      // Cache the generated segment
-      await MeditationCache.cacheSegment(
-        stressLevel: stressLevel,
-        meditationStyle: _userAccount?.meditationStyle ?? 'calm and empathetic',
-        text: text,
-      );
+      _logger.i(' SUCCESS! Got ${text.length} characters from Gemini API');
+      _logger.i(' First 150 chars: "${text.substring(0, text.length > 150 ? 150 : text.length)}..."');
       
-      return text;
+      // Clean text for smooth TTS playback
+      final cleanedText = _cleanTextForSpeech(text);
+      
+      // Don't cache meditation segments - each should be unique
+      // Only cache voice audio to save TTS API costs
+      
+      return cleanedText;
       
     } catch (e) {
-      _logger.e('⚠️ LLM API Error: $e - Using personalized fallback text');
-      // Use personalized fallback text when API fails
-      final userName = _userAccount?.name != null && _userAccount!.name.isNotEmpty 
-          ? _userAccount!.name 
-          : null; // Don't use empty string - use null so greeting is omitted
+      _logger.e(' LLM API Error: $e - Using personalized fallback text');
+      // Use simple fallback text when API fails
+      _logger.i('Using fallback meditation text (LLM unavailable)');
       
-      _logger.i('📝 FALLBACK TEXT - UserAccount.name="${_userAccount?.name}", userName=${userName ?? "(null)"}, env=${_userAccount?.preferredEnvironment}, style=${_userAccount?.meditationStyle}');
-      
-      final fallbackText = FallbackMeditationTexts.getRandomSegment(
-        _iterationCount,
-        name: userName,
-        environment: _userAccount?.preferredEnvironment,
-        style: _userAccount?.meditationStyle,
-      );
-      
-      _logger.i('🎤 Generated fallback: "${fallbackText.substring(0, fallbackText.length > 100 ? 100 : fallbackText.length)}..."');
+      // Simple, safe fallback that works for any meditation style
+      final fallbackText = 'Take a deep breath in... hold gently for a moment... and slowly release. '
+          'Feel the tension melting away with each exhale. '
+          'Your body is becoming more relaxed... your mind more peaceful. '
+          'Continue breathing naturally... finding your center... '
+          'allowing calmness to flow through you.';
       
       return fallbackText;
     }
@@ -252,62 +239,74 @@ Use their name naturally if provided. Keep it under 100 words, warm and personal
   
   String _buildDetailedPrompt({
     required int iteration,
-    required double currentHr,
-    required double currentHrv,
-    required double baselineHr,
-    required double baselineHrv,
     required bool isStressed,
     required double stressLevel,
   }) {
-    final hrChange = ((currentHr - baselineHr) / baselineHr * 100);
-    final hrvChange = ((currentHrv - baselineHrv) / baselineHrv * 100);
-    
     final userName = _userAccount?.name ?? '';
-    final namePrefix = userName.isNotEmpty ? '$userName, ' : '';
     final age = _userAccount?.age ?? 30;
-    final gender = _userAccount?.gender ?? 'other';
-    final fitness = _userAccount?.fitnessLevel ?? 'moderate';
+    final environment = _userAccount?.preferredEnvironment ?? 'nature';
     
-    // Segment focus based on iteration
-    String focus = '';
-    if (iteration == 1) {
-      focus = '${namePrefix}start by helping them ground themselves in the present moment. Focus on breath awareness and body connection. Use calming ${_userAccount?.preferredEnvironment ?? "nature"} imagery.';
-    } else if (iteration == 2) {
-      focus = '${namePrefix}guide them through progressive muscle relaxation. Scan from head to toe, releasing tension. Incorporate soothing ${_userAccount?.preferredEnvironment ?? "nature"} sounds.';
-    } else if (iteration == 3) {
-      focus = '${namePrefix}lead them into a peaceful visualization. Create a vivid ${_userAccount?.preferredEnvironment ?? "nature"} scene that they can fully immerse in.';
-    } else {
-      focus = '${namePrefix}vary your techniques - breathing exercises, body awareness, peaceful imagery. Keep it fresh and engaging. Build on the relaxation you\'ve created.';
+    // Define SPECIFIC technique for each segment to prevent repetition
+    String technique = '';
+    String example = '';
+    
+    switch (iteration) {
+      case 1:
+        technique = 'DEEP BELLY BREATHING: Guide slow, gentle breathing. Have them place hand on belly to feel movement. Focus ONLY on breath, no imagery. NO counting - use flowing descriptions instead.';
+        example = 'Place your hand gently on your belly. Feel it rise as you breathe in slowly and deeply. Hold for a moment. Now release that breath, long and slow. Feel your belly falling, all tension releasing with each exhale.';
+        break;
+      case 2:
+        technique = 'BODY SCAN: Start at toes, move up through legs, torso, arms, neck, head. Name each part and guide release. NO breath counting here.';
+        example = 'Bring your attention to your toes. Notice any tension there. Imagine warm, healing light flowing into your feet, releasing any tightness. Now move up to your calves...';
+        break;
+      case 3:
+        technique = 'VISUALIZATION: Create vivid $environment scene. Describe 3-4 sensory details (sights, sounds, smells, textures). Make them FEEL transported.';
+        example = 'Picture yourself in a peaceful $environment. The air is fresh and cool on your skin. You hear gentle sounds around you. Take in the beauty, feeling completely safe and at peace here.';
+        break;
+      case 4:
+        technique = 'PROGRESSIVE MUSCLE RELAXATION: Tense then release specific muscle groups. Start with hands, then arms.';
+        example = 'Make a gentle fist with your hands. Feel the tension... hold it... now release completely. Feel the difference as your hands soften, fingers relaxing, all tightness flowing away.';
+        break;
+      case 5:
+        technique = 'LOVING-KINDNESS: Send warmth to self. Use gentle affirmations. Build self-compassion.';
+        example = 'Place your hand over your heart. Feel your heartbeat, steady and strong. Silently say to yourself: I am worthy of peace. I am safe. I am calm. Let these words sink in deeply.';
+        break;
+      default:
+        technique = 'BREATH + MANTRA: Combine slow breathing with a calming phrase or word. Repeat gently with each breath.';
+        example = 'With each breath in, silently say "I am". With each breath out, say "calm". Breathe in... I am. Breathe out... calm. Let this rhythm carry you deeper into peace.';
     }
     
-    // Age-appropriate language
-    String ageNote = '';
-    if (age < 30) {
-      ageNote = 'Use contemporary, relatable language.';
-    } else if (age >= 60) {
-      ageNote = 'Use gentle, respectful language appropriate for their life experience.';
-    }
-    
-    return '''Meditation Segment #$iteration
+    return '''MEDITATION SEGMENT #$iteration
 
-User Demographics:
-- Age: $age years old $ageNote
-- Gender: $gender
-- Fitness Level: $fitness
+USER CONTEXT:
+- Name: ${userName.isNotEmpty ? userName : 'User'}
+- Age: $age
+- Environment preference: $environment
+- Currently: ${isStressed ? 'needs calming support' : 'relaxing well, maintain peace'}
 
-Current Biosignals:
-- Heart Rate: ${currentHr.toStringAsFixed(0)} BPM (${hrChange >= 0 ? '+' : ''}${hrChange.toStringAsFixed(1)}% from baseline ${baselineHr.toStringAsFixed(0)} BPM)
-- HRV (RMSSD): ${currentHrv.toStringAsFixed(0)} ms (${hrvChange >= 0 ? '+' : ''}${hrvChange.toStringAsFixed(1)}% from baseline ${baselineHrv.toStringAsFixed(0)} ms)
-- Stress Level: ${stressLevel.toStringAsFixed(1)}%
-- Status: ${isStressed ? 'Still experiencing stress - continue gentle guidance' : 'Starting to relax - maintain and deepen'}
+YOUR TASK:
+$technique
 
-$focus
+STRICT RULES (BREAKING THESE CAUSES ERRORS):
 
-${isStressed 
-    ? 'The user needs continued support. Create a deeply calming segment with specific breathing guidance (count breaths, guide timing). Reference their elevated heart rate (${currentHr.toStringAsFixed(0)} BPM) to show you\'re aware of their state. Help them feel safe and supported.'
-    : 'The user is relaxing! Acknowledge their progress. Continue with gentle breathing guidance to maintain and deepen this calm state. They\'re doing well.'}
+1. NO GREETINGS: Don't say "hello", "hi", "hello again", "welcome back"
+2. NO BIOMARKER NUMBERS: Don't mention heart rate, HRV, or any numbers about their health
+3. NO META-TALK: Don't say "let's do", "now we'll", "in this segment"
+4. NO RANDOM WORDS: NEVER say "dollars", "money", "price", or any non-meditation words
+5. NO COUNTING: Don't count breaths (no "one, two, three, four"). Use flowing descriptions like "breathe in deeply... and release slowly"
+6. JUMP STRAIGHT INTO THE TECHNIQUE: Start immediately with the meditation instruction
+7. USE NAME SPARINGLY: Maximum once, naturally integrated (or not at all if it doesn't flow)
+8. SMOOTH FLOW: Write in complete, flowing sentences. Use "..." for natural pauses
+9. ONE TECHNIQUE ONLY: Stick to the technique above, don't mix multiple techniques
+10. APPROXIMATELY 100 WORDS: Not too short, not too long
+11. NO ENDING: Don't conclude. Just pause naturally so next segment can continue
+12. MEDITATION VOCABULARY ONLY: Use only calming, meditation-appropriate words (breath, calm, peace, relax, gentle, etc.)
 
-Generate the next segment (approximately ${MeditationConfig.targetWordCount} words). MUST include specific breathing instructions. Create a natural pause at the end, not a complete ending. Make it personal and varied.''';
+EXAMPLE (DO NOT COPY - just shows the style):
+$example
+
+NOW GENERATE SEGMENT #$iteration:
+Write a smooth, calming meditation using the technique above. Start directly with the instruction. Make it feel like a continuous flow, not a new "chapter". No greetings, no numbers, just pure meditation guidance.''';
   }
   
   /// Generate completion message
@@ -324,32 +323,81 @@ Generate the next segment (approximately ${MeditationConfig.targetWordCount} wor
       final userName = _userAccount?.name ?? '';
       final namePrefix = userName.isNotEmpty ? '$userName, ' : '';
       
-      final prompt = '''Create a warm, congratulatory closing message for a completed meditation session.
+      final prompt = '''Create a SHORT, warm congratulatory message for completing a meditation.
 
-User: ${userName.isNotEmpty ? userName : 'the user'}
+User: ${userName.isNotEmpty ? userName : 'User'}
+Starting heart rate: ${startHr.toStringAsFixed(0)} beats per minute
+Ending heart rate: ${endHr.toStringAsFixed(0)} beats per minute
 
-Results:
-- Starting HR: ${startHr.toStringAsFixed(0)} BPM → Ending HR: ${endHr.toStringAsFixed(0)} BPM (${hrImprovement.toStringAsFixed(1)}% improvement)
-- Starting HRV: ${startHrv.toStringAsFixed(0)} ms → Ending HRV: ${endHrv.toStringAsFixed(0)} ms (${hrvImprovement.toStringAsFixed(1)}% improvement)
+REQUIREMENTS:
+1. Use their name once: "${userName}"
+2. Mention the biomarker improvement explicitly (e.g., "from ${startHr.toStringAsFixed(0)} to ${endHr.toStringAsFixed(0)} beats per minute")
+3. Keep it to 2-3 SHORT sentences maximum (under 50 words)
+4. Be warm but concise
+5. Write numbers clearly for text-to-speech (avoid "BPM" abbreviation)
 
-Acknowledge their achievement, reference the specific improvements, and encourage them to carry this calm with them. Keep it under 80 words, warm and uplifting.''';
+EXAMPLE:
+"${userName}, wonderful work. Your heart rate has come down from ${startHr.toStringAsFixed(0)} to ${endHr.toStringAsFixed(0)} beats per minute. Carry this peace with you."
+
+Generate a SHORT completion message like the example above.''';
 
       final response = await _model.generateContent([Content.text(prompt)]);
-      return response.text ?? "${namePrefix}wonderful work. You've successfully calmed your mind and body. Carry this peace with you.";
+      final rawText = response.text ?? "${namePrefix}wonderful work. Your heart rate has come down from ${startHr.toStringAsFixed(0)} to ${endHr.toStringAsFixed(0)} beats per minute. You've successfully calmed your mind and body. Carry this peace with you.";
+      
+      // Clean text for smooth speech
+      final completionText = _cleanTextForSpeech(rawText);
+      
+      _logger.i(' Completion message generated: "$completionText"');
+      return completionText;
     } catch (e) {
       _logger.e('Error generating completion: $e');
       return MeditationConfig.completionText;
     }
   }
   
-  String _getFallbackText(int iteration) {
-    final fallbacks = [
-      'Let\'s focus on your breath right now. Breathe in slowly for 4 counts... hold... and breathe out for 6 counts. Feel the tension melting away with each exhale. You\'re safe here.',
-      'Notice where you feel tension in your body. Starting from your toes, consciously relax each muscle. Move up through your legs... your torso... your arms... all the way to your face. Release everything.',
-      'Imagine yourself in the most peaceful place you can think of. Maybe it\'s a quiet beach, or a serene forest. Let yourself be completely present there. Breathe in the calm.',
-      'You\'re doing wonderfully. Continue breathing naturally and deeply. With each breath, you\'re becoming more relaxed, more centered, more at peace. Just be here, in this moment.',
-    ];
-    return fallbacks[(iteration - 1) % fallbacks.length];
+  /// Clean text for smooth speech synthesis
+  String _cleanTextForSpeech(String text) {
+    String cleaned = text
+        // Remove any newlines that might cause pauses
+        .replaceAll('\n', ' ')
+        // Remove markdown formatting - MUST use replaceAllMapped for capture groups!
+        .replaceAllMapped(RegExp(r'\*\*([^*]+)\*\*'), (m) => m.group(1)!) // **bold** -> bold
+        .replaceAllMapped(RegExp(r'\*([^*]+)\*'), (m) => m.group(1)!) // *italic* -> italic
+        .replaceAllMapped(RegExp(r'__([^_]+)__'), (m) => m.group(1)!) // __bold__ -> bold
+        .replaceAllMapped(RegExp(r'_([^_]+)_'), (m) => m.group(1)!) // _italic_ -> italic
+        // Normalize ellipses for natural pauses
+        .replaceAll(RegExp(r'\.{2,}'), '...') // Multiple dots -> exactly 3
+        // CRITICAL FIX: Remove standalone digit patterns that TTS might misinterpret
+        // Replace "1, 2, 3, 4" patterns with spelled-out words
+        .replaceAllMapped(RegExp(r'\b1\b'), (match) => 'one')
+        .replaceAllMapped(RegExp(r'\b2\b'), (match) => 'two')
+        .replaceAllMapped(RegExp(r'\b3\b'), (match) => 'three')
+        .replaceAllMapped(RegExp(r'\b4\b'), (match) => 'four')
+        .replaceAllMapped(RegExp(r'\b5\b'), (match) => 'five')
+        .replaceAllMapped(RegExp(r'\b6\b'), (match) => 'six')
+        .replaceAllMapped(RegExp(r'\b7\b'), (match) => 'seven')
+        .replaceAllMapped(RegExp(r'\b8\b'), (match) => 'eight')
+        .replaceAllMapped(RegExp(r'\b9\b'), (match) => 'nine')
+        .replaceAllMapped(RegExp(r'\b10\b'), (match) => 'ten')
+        // Remove extra whitespace
+        .replaceAll(RegExp(r'\s+'), ' ')
+        // Clean up punctuation spacing - MUST use replaceAllMapped for capture groups!
+        .replaceAllMapped(RegExp(r'\s+([,.:;!?])'), (m) => m.group(1)!) // Remove space before punctuation
+        .replaceAllMapped(RegExp(r'([,.:;!?])([^\s])'), (m) => '${m.group(1)} ${m.group(2)}') // Add space after punctuation
+        .trim();
+    
+    // SAFETY CHECK: Detect completely invalid content
+    final invalidWords = ['dollar', 'money', 'price', 'cost', 'payment', 'currency', '\$'];
+    for (final word in invalidWords) {
+      if (cleaned.toLowerCase().contains(word)) {
+        _logger.e('INVALID CONTENT DETECTED: Text contains "$word" - this is NOT meditation content!');
+        _logger.e('   Problematic text: "$cleaned"');
+        // Return a safe fallback instead
+        return 'Take a deep breath in... and slowly breathe out. Feel yourself becoming more calm and peaceful with each breath.';
+      }
+    }
+    
+    return cleaned;
   }
   
   void reset() {
@@ -361,4 +409,5 @@ Acknowledge their achievement, reference the specific improvements, and encourag
     reset();
   }
 }
+
 

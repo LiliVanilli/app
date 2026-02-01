@@ -1,10 +1,32 @@
-import 'api_keys.dart';
+
 
 /// Configuration for meditation LLM and settings
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 class MeditationConfig {
-  // API Configuration - imported from api_keys.dart (not committed)
-  static String get geminiApiKey => ApiKeys.geminiApiKey;
-  static String get googleCloudTtsApiKey => ApiKeys.googleCloudTtsApiKey;
+    // API Configuration - loaded from .env
+    static String get geminiApiKey {
+      final key = dotenv.env['GEMINI_API_KEY'] ?? 'NONE';
+      // Validate that it's not a placeholder
+      if (key == 'NONE' || key == 'YOUR_GEMINI_API_KEY_HERE' || 
+          key.contains('YOUR_') || key.contains('your_')) {
+        return 'NONE';
+      }
+      return key;
+    }
+    
+    static String get googleCloudTtsApiKey {
+      final key = dotenv.env['GOOGLE_CLOUD_TTS_API_KEY'] ?? 'NONE';
+      // Validate that it's not a placeholder
+      if (key == 'NONE' || key == 'YOUR_GOOGLE_CLOUD_TTS_API_KEY_HERE' || 
+          key.contains('YOUR_') || key.contains('your_')) {
+        return 'NONE';
+      }
+      return key;
+    }
+    
+    // Debug helper to check if APIs are configured
+    static bool get hasValidGeminiKey => geminiApiKey != 'NONE' && geminiApiKey.startsWith('AIza');
+    static bool get hasValidTtsKey => googleCloudTtsApiKey != 'NONE' && googleCloudTtsApiKey.startsWith('AIza');
   
   // Meditation Settings
   static const int targetWordCount = 280;
