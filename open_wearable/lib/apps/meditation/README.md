@@ -2,7 +2,7 @@
 
 A real-time, AI-powered meditation application that combines physiological sensing with personalized guidance. The system monitors heart rate (HR) and heart rate variability (HRV) from OpenEarable wearable devices, detects stress levels, and generates adaptive meditation content using large language models.
 
-## 🎯 Features
+## Features
 
 - **Real-time Biosignal Processing**: Continuous HR/HRV monitoring from PPG sensors
 - **Activity-Aware Stress Detection**: IMU-based activity classification prevents false positives during exercise
@@ -151,7 +151,7 @@ Hybrid baseline approach combining research priors with live measurements:
 
 **Key File**: `improved_meditation_controller.dart`
 
-## 🛡️ Robustness Features
+## Robustness Features
 
 ### Fallback Mechanisms
 
@@ -174,7 +174,7 @@ Hybrid baseline approach combining research priors with live measurements:
 - Minimum data requirements (10 RR for RMSSD, 30 for SDNN)
 - Comprehensive logging (sensor packets, API calls, fallback triggers)
 
-## 📊 Data Storage
+## Data Storage
 
 ### Session History (`meditation_history.dart`)
 ```dart
@@ -202,7 +202,7 @@ Hybrid baseline approach combining research priors with live measurements:
 }
 ```
 
-## 🔑 Configuration
+## Configuration
 
 ### API Keys (`.env` file)
 ```bash
@@ -216,7 +216,7 @@ GOOGLE_CLOUD_TTS_API_KEY=AIza...
 - Environment: nature/ocean/mountain/forest
 - Voice: premium (paid) or free (offline)
 
-## 🧪 Testing
+## Testing
 
 ### Mock Sensor (`mock_hr_sensor.dart`)
 Simulates realistic biosignal patterns for development:
@@ -230,20 +230,20 @@ Simulates realistic biosignal patterns for development:
 - Test TTS synthesis
 - Cache management
 
-## 📈 Performance Metrics
+## Performance Metrics
 
 - **Latency**: <3s segment generation (LLM)
 - **Memory**: Bounded buffers (50 RR intervals, 3600 HR/HRV history)
 - **Battery**: Optimized Bluetooth packet handling
 - **Cache Hit Rate**: ~60% for repeated phrases
 
-## 🔬 Scientific References
+## Scientific References
 
 - **HRV Baselines**: Nunan et al. (2010), Tegegne et al. (2018)
 - **Activity Detection**: Stuchbury-Wass et al. (WalkEar, 2025)
 - **Stress Classification**: Schroeder et al. (2004)
 
-## 🚀 Usage Example
+## Usage Example
 
 ```dart
 // Initialize sensor
@@ -266,7 +266,7 @@ final controller = ImprovedMeditationController(
 await controller.startSession();
 ```
 
-## 📝 Code Quality
+## Code Quality
 
 - **Documentation**: All classes have docstring headers
 - **Type Safety**: Strict null safety enabled
@@ -274,20 +274,63 @@ await controller.startSession();
 - **Separation of Concerns**: Model-View-Widget architecture
 - **Testing**: Mock sensor for offline development
 
-## 🐛 Known Limitations
+## Known Limitations
 
-- Post-exercise HR elevation may persist (5-10 min recovery)
-- HRV requires 30-60s for stable SDNN measurement
-- Premium TTS requires network connectivity
-- Earable-specific thresholds (not validated for wrist-worn devices)
+### Sensor & Signal Quality
 
-## 📄 License
+- **Post-Exercise False Positives**: After vigorous activity stops, the activity detector transitions to "resting" within ~3 seconds while HR remains elevated. This can trigger false stress detection during cardiac recovery periods (5-10 min). A cooldown mechanism (suppression window after exercise) would mitigate this but is not currently implemented.
+
+- **Sensor Fit Sensitivity**: HR/HRV accuracy depends on proper earable fit. Poor contact during high arousal can lead to underestimated HR or corrupted RR intervals, potentially preventing stress detection even when the user is genuinely stressed. Fit guidance and signal-quality indicators are recommended for production use.
+
+- **RMSSD Short-Term Variability**: RMSSD can vary substantially over short windows and is sensitive to transient artifacts. The current implementation uses 10+ RR intervals for stability, but artifact handling could be improved with respiration-aware interpretation and movement-aware filtering.
+
+### Stress Detection Robustness
+
+- **Activity Detection More Robust Than Stress Inference**: IMU-based activity classification appears more reliable than stress detection in pilot testing. The system may correctly identify movement but miss concurrent stress states, particularly in boundary cases.
+
+- **Static/Isometric Exercise Not Characterized**: Current activity thresholds are calibrated for dynamic movements (walking, running). Static exercises (planks, wall sits) with high physiological load but minimal motion may not be correctly classified, potentially leading to false stress detection.
+
+- **Threshold Sensitivity Trade-Off**: Current stress thresholds prioritize specificity (avoiding false alarms) over sensitivity (catching all stress episodes). More sensitive detection would trigger earlier interventions but risks user annoyance from false positives. This trade-off should be evaluated empirically and potentially made user-configurable.
+
+### Baseline & Personalization
+
+- **Baseline Calibration Strategy**: The 30-second weighted blending approach provides immediate usability but may not capture individual variability optimally. Alternative strategies (rolling median, context-aware baselines conditioned on time-of-day/posture/recent activity) should be explored.
+
+- **Generalizability**: Demographic-based initial baselines are derived from population studies but may not reflect individual physiology accurately. Users with atypical cardiovascular profiles (e.g., athletes, medical conditions) may experience suboptimal detection.
+
+### User Experience
+
+- **Voice Quality & Personal Touch**: Synthetic TTS voices (even premium) can reduce perceived interpersonal quality compared to human narration. Users noted the AI voice made the experience "less personal" despite content personalization.
+
+- **Personalization Burden**: Not all users know their meditation preferences upfront. Requiring style/environment selection at onboarding can be overwhelming. Guided recommendations with sensible defaults would improve initial experience.
+
+- **Intervention Feasibility**: Not all stress moments permit a full meditation session. Users requested shorter alternatives (brief audio, haptic feedback, ambient soundscapes) for situations where meditation is not feasible.
+
+- **Lack of Contextual Feedback**: Raw HR/HRV numbers are difficult to interpret without normative comparisons. Users want to know if their values are "good" relative to population norms or personal trends.
+
+### Technical
+
+- **Measurement Stability**: HRV (SDNN) requires 30-60s for stable estimation. Early-session values may be noisy.
+
+- **Network Dependency**: Premium TTS and LLM content generation require internet connectivity. Offline fallbacks work but reduce personalization quality.
+
+- **Device-Specific**: All thresholds and algorithms are calibrated for OpenEarable in-ear sensors. Validation for other wearable form factors (wrist, finger, chest) is needed before generalization.
+
+### Validation & Evaluation
+
+- **Limited Validation Sample**: Initial pilot study (N=4) provides qualitative insights but is insufficient for statistical inference or generalizability claims.
+
+- **Lab-Only Testing**: Stress detection has only been validated in controlled lab settings (MAST-inspired stressor). Real-world performance across diverse daily stressors and contexts remains uncharacterized.
+
+- **No ECG Ground Truth**: PPG-derived HR/HRV has not been validated against gold-standard ECG in this implementation. Bias, lag, and artifact susceptibility are unquantified.
+
+## License
 
 See main repository LICENSE file.
 
-## 👥 Contributors
+## Contributors
 
-Developed as part of the EarStream research project at TUM.
+Developed as part of the EarStream research project.
 
 ---
 
