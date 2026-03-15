@@ -35,22 +35,25 @@ class MockHrSensor implements HrSensorInterface {
   /// Stream of HRV metrics (SDNN, RMSSD, pNN50)
   Stream<Map<String, double>> get hrvStream => _hrvController.stream;
   
+  /// Stream of connection state (always connected for mock)
+  Stream<bool> get isConnected => Stream.value(true).asBroadcastStream();
+  
   /// Start generating mock data
-  void start() {
+  Future<void> start() async {
     if (_isActive) return;
     _isActive = true;
     
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      // Gradually move towards target HR and HRV
-      _currentHr += (_targetHr - _currentHr) * 0.1;
-      _currentHrv += (_targetHrv - _currentHrv) * 0.1;
+      // Gradually move towards target HR and HRV (very fast for testing)
+      _currentHr += (_targetHr - _currentHr) * 0.95; // Super fast: 95% per second
+      _currentHrv += (_targetHrv - _currentHrv) * 0.95; // Super fast: 95% per second
       
       // Add realistic noise
       final hrNoise = _random.nextDouble() * 4 - 2; // +/- 2 BPM
       final hr = (_currentHr + hrNoise).clamp(50.0, 120.0);
       
-      final hrvNoise = _random.nextDouble() * 8 - 4; // +/- 4 ms
-      final rmssd = (_currentHrv + hrvNoise).clamp(20.0, 200.0);
+      final hrvNoise = _random.nextDouble() * 3 - 1.5; // +/- 1.5 ms (smaller noise)
+      final rmssd = (_currentHrv + hrvNoise).clamp(10.0, 200.0);
       
       _hrController.add(hr);
       
@@ -75,7 +78,7 @@ class MockHrSensor implements HrSensorInterface {
   /// Triggers stress detection: HR > 95 OR HRV < 15
   void simulateStress() {
     _targetHr = 100.0;  // Well above 95 threshold
-    _targetHrv = 35.0;  // Low HRV indicates stress
+    _targetHrv = 12.0;  // Below 15ms threshold - THIS TRIGGERS STRESS!
   }
   
   /// Simulate relaxation (decrease HR, increase HRV)
@@ -87,8 +90,8 @@ class MockHrSensor implements HrSensorInterface {
   
   /// Reset to baseline
   void reset() {
-    _targetHr = 75.0;
-    _targetHrv = 120.0;
+    _targetHr = 75.0;   // Normal resting HR
+    _targetHrv = 120.0; // Good HRV
   }
   
   /// Dispose resources

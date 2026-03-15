@@ -33,9 +33,24 @@ class SensorValueCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  PlatformText(sensor.sensorName, style: Theme.of(context).textTheme.bodyLarge),
-                  Spacer(),
-                  PlatformText(wearable.name, style: Theme.of(context).textTheme.bodyMedium),
+                  Expanded(
+                    flex: 2,
+                    child: PlatformText(
+                      sensor.sensorName, 
+                      style: Theme.of(context).textTheme.bodyLarge,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    flex: 1,
+                    child: PlatformText(
+                      wearable.name, 
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
                 ],
               ),
               Padding(

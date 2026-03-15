@@ -8,8 +8,11 @@ abstract class HrSensorInterface {
   /// Stream of HRV metrics (SDNN, RMSSD, pNN50)
   Stream<Map<String, double>> get hrvStream;
   
+  /// Stream of connection state (true=connected, false=disconnected)
+  Stream<bool> get isConnected;
+  
   /// Start generating data
-  void start();
+  Future<void> start();
   
   /// Stop generating data
   void stop();

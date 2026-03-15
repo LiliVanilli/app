@@ -9,6 +9,8 @@ class HrHrvDisplayNew extends StatelessWidget {
   final String stressLevel;
   final bool isHrvStable; // New: indicates if HRV measurement is reliable
   final int? measurementDurationSeconds; // Timer for metrics requiring long measurement
+  final String? activityLevel; // Activity level from accelerometer/gyroscope
+  final String? activityDescription; // Human-readable activity description
   
   const HrHrvDisplayNew({
     super.key,
@@ -18,6 +20,8 @@ class HrHrvDisplayNew extends StatelessWidget {
     required this.stressLevel,
     this.isHrvStable = true, // Default to true for backward compatibility
     this.measurementDurationSeconds,
+    this.activityLevel,
+    this.activityDescription,
   });
   
   @override
@@ -134,9 +138,60 @@ class HrHrvDisplayNew extends StatelessWidget {
               ],
             ),
           ),
+          // Activity Level Indicator (if available)
+          if (activityLevel != null && activityDescription != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+              decoration: BoxDecoration(
+                color: Colors.blueGrey[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blueGrey[200]!, width: 1),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _getActivityIcon(activityLevel!),
+                    color: Colors.blueGrey[700],
+                    size: 18,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      activityDescription!,
+                      style: TextStyle(
+                        color: Colors.blueGrey[800],
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
+  }
+  
+  IconData _getActivityIcon(String level) {
+    switch (level) {
+      case 'resting':
+        return Icons.airline_seat_individual_suite;
+      case 'light':
+        return Icons.directions_walk;
+      case 'moderate':
+        return Icons.directions_run;
+      case 'vigorous':
+        return Icons.fitness_center;
+      case 'intense':
+        return Icons.bolt;
+      default:
+        return Icons.help_outline;
+    }
   }
 }
 

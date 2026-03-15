@@ -16,13 +16,21 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // Updated from Java 1.8 to Java 11 for Kotlin 2.2.0 compatibility (required for flutter_tts in meditation app)
+    // compileOptions {
+    //     sourceCompatibility = JavaVersion.VERSION_1_8
+    //     targetCompatibility = JavaVersion.VERSION_1_8
+    // }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
 
+    // kotlinOptions {
+    //     jvmTarget = JavaVersion.VERSION_1_8
+    // }
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_1_8
+        jvmTarget = JavaVersion.VERSION_11
     }
 
     defaultConfig {

@@ -22,8 +22,6 @@ class _BreathingAnimationState extends State<BreathingAnimation>
   late Animation<double> _scaleAnimation;
   late Animation<double> _opacityAnimation;
   
-  String _breathText = 'Breathe in...';
-  
   @override
   void initState() {
     super.initState();
@@ -56,18 +54,6 @@ class _BreathingAnimationState extends State<BreathingAnimation>
         weight: 50,
       ),
     ]).animate(_controller);
-    
-    _controller.addListener(() {
-      if (_controller.value < 0.5) {
-        if (_breathText != 'Breathe in...') {
-          setState(() => _breathText = 'Breathe in...');
-        }
-      } else {
-        if (_breathText != 'Breathe out...') {
-          setState(() => _breathText = 'Breathe out...');
-        }
-      }
-    });
     
     if (widget.isActive) {
       _controller.repeat();
@@ -122,15 +108,7 @@ class _BreathingAnimationState extends State<BreathingAnimation>
                 ],
               ),
             ),
-            const SizedBox(height: 12),
-            Text(
-              _breathText,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 1.0,
-              ),
-            ),
+            // Removed breathe in/out text - just show flower
           ],
         );
       },

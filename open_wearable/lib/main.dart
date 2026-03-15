@@ -10,6 +10,7 @@ import 'package:open_wearable/widgets/global_app_banner_overlay.dart';
 import 'package:open_wearable/widgets/home_page.dart';
 import 'package:provider/provider.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart' as oe;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import 'models/bluetooth_auto_connector.dart';
 import 'view_models/app_banner_controller.dart';
@@ -27,8 +28,9 @@ class CustomLogFilter extends LogFilter {
   }
 }
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load();
   oe.logger = Logger(level: Level.trace, filter: CustomLogFilter());
 
   runApp(
