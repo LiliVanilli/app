@@ -13,7 +13,7 @@ A real-time, AI-powered meditation application that combines physiological sensi
 - **Session Analytics**: Weekly progress tracking with mood ratings
 - **Robust Fallback Mechanisms**: Offline operation with pre-defined scripts
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 meditation/
@@ -45,7 +45,7 @@ meditation/
 │
 ├── widgets/                        # Reusable UI components
 │   ├── api_debug_widget.dart       # API configuration testing
-│   ├── breathing_animation.dart    # Apple Watch-style breathing circles
+│   ├── breathing_animation.dart    # Breathing circles
 │   ├── cute_timer_widget.dart      # Session duration display
 │   ├── hr_hrv_chart.dart           # Real-time biosignal charts
 │   ├── hr_hrv_display_new.dart     # Current HR/HRV metrics display
@@ -58,7 +58,7 @@ meditation/
     └── image.png                   # App icon/branding
 ```
 
-## 🔧 Core Components
+## Core Components
 
 ### 1. Biosignal Processing Pipeline
 
@@ -266,14 +266,6 @@ final controller = ImprovedMeditationController(
 await controller.startSession();
 ```
 
-## Code Quality
-
-- **Documentation**: All classes have docstring headers
-- **Type Safety**: Strict null safety enabled
-- **Error Handling**: Try-catch blocks with logging
-- **Separation of Concerns**: Model-View-Widget architecture
-- **Testing**: Mock sensor for offline development
-
 ## Known Limitations
 
 ### Sensor & Signal Quality
@@ -318,8 +310,6 @@ await controller.startSession();
 
 ### Validation & Evaluation
 
-- **Limited Validation Sample**: Initial pilot study (N=4) provides qualitative insights but is insufficient for statistical inference or generalizability claims.
-
 - **Lab-Only Testing**: Stress detection has only been validated in controlled lab settings (MAST-inspired stressor). Real-world performance across diverse daily stressors and contexts remains uncharacterized.
 
 - **No ECG Ground Truth**: PPG-derived HR/HRV has not been validated against gold-standard ECG in this implementation. Bias, lag, and artifact susceptibility are unquantified.
@@ -330,7 +320,11 @@ See main repository LICENSE file.
 
 ## Contributors
 
-Developed as part of the EarStream research project.
+**Luisa Faust** - Implementation & Technical Documentation  
+
+**Elias Müller** - Research & Evaluation  
+
+Developed as part of the EarStream research project at KIT.
 
 ---
 
